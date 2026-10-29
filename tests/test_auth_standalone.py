@@ -10,11 +10,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTH_MODULE_PATH = REPO_ROOT / "channels" / "auth.py"
 
 
-def load_auth_module(monkeypatch, gateway_url=""):
+def load_auth_module(monkeypatch, gateway_url="", **config):
     monkeypatch.syspath_prepend(str(REPO_ROOT))
     config_module = types.ModuleType("config")
+    settings = {"GATEWAY_URL": gateway_url, **config}
     config_module.config_get_by_key = (
-        lambda key, default=None: gateway_url if key == "GATEWAY_URL" else default
+        lambda key, default=None: settings.get(key, default)
     )
     monkeypatch.setitem(sys.modules, "config", config_module)
 
@@ -33,12 +34,28 @@ def test_standalone_auth_rejects_wrong_secret(monkeypatch):
     assert auth.verify_token("1234") is True
 
 
-def test_standalone_auth_without_secret_is_disabled_and_denies(monkeypatch):
+def test_missing_secret_keeps_auth_on_and_denies_everyone(monkeypatch):
     monkeypatch.delenv("OMEGA_AUTH_SECRET", raising=False)
     auth = load_auth_module(monkeypatch)
 
+    assert auth.is_auth_enabled() is True
+    assert auth.verify_token("anything") is False
+    assert auth.verify_token("") is False
+
+
+def test_unauthenticated_mode_needs_explicit_opt_in(monkeypatch):
+    monkeypatch.delenv("OMEGA_AUTH_SECRET", raising=False)
+    auth = load_auth_module(monkeypatch, allowUnauthenticated="True")
+
     assert auth.is_auth_enabled() is False
     assert auth.verify_token("anything") is False
+
+
+def test_secret_wins_over_unauthenticated_opt_in(monkeypatch):
+    monkeypatch.setenv("OMEGA_AUTH_SECRET", "a-long-enough-owner-secret")
+    auth = load_auth_module(monkeypatch, allowUnauthenticated="True")
+
+    assert auth.is_auth_enabled() is True
 
 
 def test_standalone_auth_accepts_unicode_secret(monkeypatch):

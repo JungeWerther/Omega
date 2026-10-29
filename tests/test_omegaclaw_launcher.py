@@ -607,3 +607,68 @@ def test_legacy_image_path_version_is_compared(tmp_path):
     assert "Omega version=v0.0.0-test" in result.stderr
     assert "Could not determine the Docker image version" not in result.stderr
     assert "docker <rm>" not in result.stdout
+
+
+# -- auth secret and gate wiring ---------------------------------------------
+
+def _agent_run(result):
+    return next(
+        line for line in result.stdout.splitlines()
+        if line.startswith("docker <run> ") and "<--name> <omega>" in line
+    )
+
+
+def _secret_from(agent_run):
+    marker = "<OMEGA_AUTH_SECRET="
+    return agent_run.split(marker, 1)[1].split(">", 1)[0]
+
+
+def test_launcher_never_defaults_to_a_guessable_secret(tmp_path):
+    result = _run_launcher(tmp_path, memory_import=False)
+
+    assert result.returncode == 0, result.stderr
+    secret = _secret_from(_agent_run(result))
+    assert secret != "0000"
+    assert len(secret) >= 16
+    assert f"Generated auth secret (send 'auth <secret>' to the bot once): {secret}" in result.stdout
+
+
+def test_launcher_generates_a_different_secret_each_start(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    first = _secret_from(_agent_run(_run_launcher(tmp_path / "a", memory_import=False)))
+    second = _secret_from(_agent_run(_run_launcher(tmp_path / "b", memory_import=False)))
+
+    assert first != second
+
+
+def test_launcher_warns_about_short_explicit_secrets(tmp_path):
+    result = _run_launcher(tmp_path, "-s", "4242", memory_import=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "shorter than 16 characters" in result.stderr
+    assert _secret_from(_agent_run(result)) == "4242"
+
+
+def test_launcher_mounts_the_gate_state_volume(tmp_path):
+    result = _run_launcher(tmp_path, memory_import=False)
+
+    assert "<omega-gate:/var/lib/omega-gate>" in _agent_run(result)
+
+
+def test_websocket_token_is_passed_as_environment_not_argument(tmp_path, monkeypatch):
+    environment_token = "ws-secret-token"
+    monkeypatch.setenv("WS_TOKEN", environment_token)
+    result = _run_launcher(tmp_path, "-t", "websocket", memory_import=False)
+
+    agent_run = _agent_run(result)
+    assert f"<OMEGA_WS_TOKEN={environment_token}>" in agent_run
+    assert f"<WS_TOKEN={environment_token}>" not in agent_run
+
+
+def test_clean_removes_the_gate_volume(tmp_path):
+    environment = _stub_docker_environment(tmp_path)
+    result = subprocess.run([str(LAUNCHER), "clean"], cwd=REPO_ROOT, env=environment,
+                            capture_output=True, text=True, check=False)
+
+    assert "docker <volume> <rm> <omega-gate>" in result.stdout

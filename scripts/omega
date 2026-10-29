@@ -16,7 +16,6 @@ cat >"$tmp_py_file" <<'PY'
 import getpass
 import json
 import secrets
-import string
 import shlex
 import shutil
 import sys
@@ -334,7 +333,7 @@ def config_run_omega(
     with open(config_output_path, "w", encoding="utf-8") as f:
         _write_kv(f, "api_token_var", api_token_var)
         _write_kv(f, "api_token", token)
-        _write_kv(f, "OMEGA_AUTH_SECRET", "".join(secrets.choice(string.digits) for _ in range(6)))
+        _write_kv(f, "OMEGA_AUTH_SECRET", secrets.token_urlsafe(18))
         _write_kv(f, "provider", provider)
         _write_kv(f, "embeddingprovider", embeddingprovider)
         _write_kv(f, "model", model)
@@ -682,8 +681,27 @@ require_option_value() {
     fi
 }
 
+# Owner secrets are long and random: the first sender to present the secret
+# becomes the agent's owner, so a guessable default hands the agent to
+# whoever tries it first.
+MIN_AUTH_SECRET_LENGTH=16
+
+generate_auth_secret() {
+    head -c 18 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n'
+}
+
+ensure_auth_secret() {
+    if [ -z "${OMEGA_AUTH_SECRET:-}" ]; then
+        OMEGA_AUTH_SECRET=$(generate_auth_secret)
+        echo "Generated auth secret (send 'auth <secret>' to the bot once): ${OMEGA_AUTH_SECRET}"
+    elif [ "${#OMEGA_AUTH_SECRET}" -lt "${MIN_AUTH_SECRET_LENGTH}" ]; then
+        echo "WARNING: the auth secret is shorter than ${MIN_AUTH_SECRET_LENGTH} characters." \
+             "Wrong guesses are rate limited, but omit -s to get a generated random secret." >&2
+    fi
+}
+
 options() {
-    OMEGA_AUTH_SECRET=0000
+    OMEGA_AUTH_SECRET=""
     provider=ASICloud
     image=singularitynet/omega:latest
     commchannel=irc
@@ -1086,6 +1104,7 @@ path.unlink()
 }
 
 start() {
+    ensure_auth_secret
     container_log_config_path=""
     log_config_volume=()
     memory_transfer_volume=()
@@ -1161,6 +1180,7 @@ if sys.argv[1]:
             --tmpfs /var/tmp:size=64m,mode=1777
             --tmpfs /run:size=16m,mode=755
             --volume omega-memory:/PeTTa/repos/Omega/memory
+            --volume omega-gate:/var/lib/omega-gate
             ${log_config_volume[@]+"${log_config_volume[@]}"}
             ${memory_transfer_volume[@]+"${memory_transfer_volume[@]}"}
             -e "${api_token_var}"="${api_token}"
@@ -1168,6 +1188,7 @@ if sys.argv[1]:
             -e "SL_BOT_TOKEN=${SL_BOT_TOKEN:-}"
             -e "OMEGA_OPENCLAW_TOKEN=${OMEGA_OPENCLAW_TOKEN:-}"
             -e OMEGA_AUTH_SECRET="$OMEGA_AUTH_SECRET"
+            -e OMEGA_WS_TOKEN="${WS_TOKEN:-}"
             -e IMPORT_KB_ON_START="${IMPORT_KB_ON_START:-0}"
             ${memory_import_env[@]+"${memory_import_env[@]}"}
             "$image"
@@ -1191,7 +1212,6 @@ if sys.argv[1]:
       docker_cmd+=("SL_POLL_INTERVAL=${SL_POLL_INTERVAL}")
     elif [ "${commchannel}" = "websocket" ]; then
       docker_cmd+=("WS_URL=${WS_URL}")
-      docker_cmd+=("WS_TOKEN=${WS_TOKEN}")
     elif [ "${commchannel}" = "test" ]; then
       docker_cmd+=("TEST_SERVER_IP=${TEST_SERVER_IP}")
     else
@@ -1223,6 +1243,7 @@ stop() {
 clean() {
     docker rm -f omega
     docker volume rm omega-memory
+    docker volume rm omega-gate 2>/dev/null || true
 }
 
 set -euo pipefail

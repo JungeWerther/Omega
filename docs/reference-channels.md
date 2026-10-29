@@ -2,6 +2,8 @@
 
 Channels are the I/O surface the agent uses to talk to the outside world. Adapters live in `channels/`; MeTTa-side dispatch lives in `src/channels.metta`.
 
+In the Docker image the adapters run in a separate gate process that authenticates senders; the agent talks to it through `GATE_URL`. See [channel authentication](reference-channel-auth.md).
+
 ## The adapter contract
 
 Each adapter exposes:
@@ -53,7 +55,7 @@ Telegram adapter using Bot API long polling.
 - `start_telegram(chat_id, allowed_chat_ids, poll_timeout)` — validates saved authorization state and starts the poll loop.
 - With authentication enabled, the owner authenticates with `auth <secret>` in a private DM. That DM becomes the default destination for startup, heartbeat, and other proactive messages and is restored from persisted owner state after restart.
 - The owner uses `/bind` in a group to add its chat ID to the runtime and persisted allowed-group sets. `/unbind` removes the current group; `/unbind <group_id>` performs the same operation from the owner's DM. Targeted forms such as `/bind@BotName` and `/unbind@BotName` are supported.
-- `TG_ALLOWED_CHAT_IDS` supplies initial operator-configured chat IDs. Runtime `/bind` additions and `/unbind` removals are persisted in `memory/.channel/authenticated-group.json`; the YAML file itself is never rewritten.
+- `TG_ALLOWED_CHAT_IDS` supplies initial operator-configured chat IDs. Runtime `/bind` additions and `/unbind` removals are persisted in `authStateDir/authenticated-group.json` (the gate volume in Docker); the YAML file itself is never rewritten.
 - Each inbound message is delivered to the agent as `[chat_id] [message_id] message`. Dequeueing does not depend on the model producing or successfully delivering a reply, so a no-response turn cannot freeze later inbound messages.
 - Outbound replies use the same `[chat_id] [message_id] message` envelope. An empty target falls back to the owner DM, and an empty message ID sends without Telegram reply metadata. Legacy plain outbound text also uses the owner-DM fallback.
 - Explicit LLM-generated targets are accepted only for the owner DM or a currently authorized group. Group chat IDs may be negative.
