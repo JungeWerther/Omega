@@ -43,7 +43,7 @@ To add a provider:
 
 ## Change the prompt
 
-The agent's identity and values are in `memory/prompt.txt`. The run-time prompt template that sandwiches it is in `getContext` in `src/loop.metta`. Edit carefully — the output-format instruction is what keeps the LLM producing valid skill s-expressions.
+The agent's identity and values are in `prompts/prompt.txt` (read-only in the image, so the agent cannot rewrite them; rebuild the image to change them). The run-time prompt template that sandwiches it is in `getContext` in `src/loop.metta`. Edit carefully — the output-format instruction is what keeps the LLM producing valid skill s-expressions.
 
 ## Change the embedding model
 

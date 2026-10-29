@@ -85,6 +85,18 @@ if [ ! -e "${migration_marker}" ]; then
   install -o "${GATE_USER}" -g "${GATE_USER}" -m 0600 /dev/null "${migration_marker}"
 fi
 
+# The system prompt is read from the image (prompts/, root-owned, read-only)
+# so a compromised agent cannot rewrite its own instructions. Copies left in
+# the memory volume by older versions are ignored.
+for legacy_prompt in "${MEMORY_DIR}"/prompt*.txt "${MEMORY_DIR}"/tg_prompt.txt; do
+  [ -f "${legacy_prompt}" ] || continue
+  image_prompt="${OMEGA_DIR}/prompts/$(basename "${legacy_prompt}")"
+  if ! cmp -s "${legacy_prompt}" "${image_prompt}"; then
+    echo "WARNING: ${legacy_prompt} differs from ${image_prompt} and is ignored." \
+         "Prompts are read only from the image now; rebuild the image to customize them." >&2
+  fi
+done
+
 su www-data -s /bin/sh -c "sh /opt/nginx/nginx.sh"
 
 # Supervise the gate. The environment is rebuilt with shell builtins inside

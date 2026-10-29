@@ -131,7 +131,7 @@ channels/telegram.py      Telegram adapter
 channels/slack.py         Slack adapter
 channels/mattermost.py    Mattermost adapter
 
-memory/prompt.txt         system prompt (agent identity + values)
+prompts/prompt.txt        system prompt (agent identity + values), read-only
 memory/history.metta      episodic trace (written at runtime)
 ```
 

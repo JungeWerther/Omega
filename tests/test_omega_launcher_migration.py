@@ -142,9 +142,6 @@ def docker_root(tmp_path):
     image_memory = root / "image-memory"
     (image_memory / "chroma_db").mkdir(parents=True)
     (image_memory / "history.metta").write_text("")
-    (image_memory / "prompt.txt").write_text("omega prompt\n")
-    (image_memory / "prompt_ASICloud.txt").write_text("omega asicloud prompt\n")
-    (image_memory / "tg_prompt.txt").write_text("omega telegram prompt\n")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker = bin_dir / "docker"
@@ -225,9 +222,8 @@ def test_first_start_copies_old_memory_except_prompts(docker_root):
     assert _read(new / "chroma_db" / "chroma.sqlite3") == "old long-term memory"
     assert _read(new / ".channel" / "authenticated-user.json") == '{"user": "owner"}'
     assert _read(new / "saved note.txt") == "kept by the agent"
-    assert _read(new / "prompt.txt") == "omega prompt\n"
-    assert _read(new / "prompt_ASICloud.txt") == "omega asicloud prompt\n"
-    assert _read(new / "tg_prompt.txt") == "omega telegram prompt\n"
+    # Prompts live read-only in the image (prompts/), never in the volume.
+    assert not list(new.glob("*prompt*.txt"))
     assert _started_agent(docker_root)
 
 
@@ -441,14 +437,14 @@ def test_failed_file_copy_restores_previous_state(docker_root):
     assert not _started_agent(docker_root)
 
 
-def test_telegram_prompt_comes_from_image(docker_root):
+def test_old_prompts_are_not_copied_into_the_volume(docker_root):
     old = _install_omegaclaw(docker_root)
     (old / "tg_prompt.txt").write_text("dev build telegram prompt\n")
 
     result = _launcher(docker_root, "start", "-d", IMAGE)
 
     assert result.returncode == 0, result.stderr
-    assert _read(docker_root / "volumes" / "omega-memory" / "tg_prompt.txt") == "omega telegram prompt\n"
+    assert not list((docker_root / "volumes" / "omega-memory").glob("*prompt*.txt"))
 
 
 def test_image_without_omega_memory_layout_aborts(docker_root):
@@ -484,7 +480,6 @@ def test_interrupted_copy_is_redone(docker_root):
     assert result.returncode == 0, result.stderr
     assert _read(new / "history.metta") == "(old history)\n"
     assert _read(new / "chroma_db" / "chroma.sqlite3") == "old long-term memory"
-    assert _read(new / "prompt.txt") == "omega prompt\n"
     assert (old / ".migrated-to-omega").exists()
     assert _started_agent(docker_root)
 
@@ -496,7 +491,7 @@ def test_run_interrupted_before_the_image_files_is_redone(docker_root):
 
     assert result.returncode == 0, result.stderr
     assert _read(new / "history.metta") == "(old history)\n"
-    assert _read(new / "prompt.txt") == "omega prompt\n"
+    assert (new / "chroma_db").is_dir()
     assert _started_agent(docker_root)
 
 

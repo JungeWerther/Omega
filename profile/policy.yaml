@@ -22,4 +22,8 @@ filesystem_policy:
   - /var/tmp
   - /dev/shm
 landlock:
+  # best_effort: drop access flags the host kernel's Landlock ABI does not
+  # know (older kernels). Landlock itself is always required: without it,
+  # or if the post-apply self-test fails, the agent exits instead of running
+  # unsandboxed (see profile/policy.py, allowUnsandboxed).
   compatibility: best_effort

@@ -62,7 +62,7 @@ Telegram adapter using Bot API long polling.
 - Outbound replies use the same `[chat_id] [message_id] message` envelope. An empty target falls back to the owner DM, and an empty message ID sends without Telegram reply metadata. Legacy plain outbound text also uses the owner-DM fallback.
 - Explicit LLM-generated targets are accepted only for the owner DM or a currently authorized group. Group chat IDs may be negative.
 - Outbound messages are split into Telegram-safe chunks and retained with their destination and reply ID for retry after transient delivery failures.
-- When `commchannel=telegram`, startup registers the routing instructions from `memory/tg_prompt.txt` through `add-prompt-extension`. Other channels do not receive this prompt section.
+- When `commchannel=telegram`, startup registers the routing instructions from `prompts/tg_prompt.txt` through `add-prompt-extension`. Other channels do not receive this prompt section.
 
 ## `channels/slack.py`
 

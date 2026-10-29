@@ -44,7 +44,7 @@ The captured stdout of the command as a string.
 Read a file into a string.
 
 ### Parameters
-- `path` — absolute or relative filesystem path. MeTTa library paths of the form `(library Omega ./memory/prompt.txt)` are also accepted (see `getPrompt`).
+- `path` — absolute or relative filesystem path. MeTTa library paths of the form `(library Omega ./prompts/prompt.txt)` are also accepted (see `getPrompt`).
 
 ### Returns
 The file's contents as a single string.
@@ -224,4 +224,5 @@ A typical workflow before writing a file is:
 - Does not reveal the complete security-policy configuration to the user.
 - If a requested path is denied, suggest using `/tmp` when appropriate.
 - If `securityPolicyPath` is empty, the skill reports that the policy is not
-  set.
+  set. The agent itself does not start in that case unless
+  `allowUnsandboxed=True` (see [configuration](reference-configuration.md)).

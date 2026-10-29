@@ -942,7 +942,7 @@ migrate_omegaclaw_memory() {
             -c "date -u > /from/${started_marker}" \
         && docker volume create "${new_volume}" >/dev/null \
         && docker run --rm --entrypoint sh --volume "${new_volume}:${memory_path}" "${image}" \
-            -c "test -f ${memory_path}/prompt.txt" \
+            -c "test -f ${memory_path}/history.metta" \
         && docker run --rm --entrypoint sh \
             --volume "${old_volume}:/from:ro" --volume "${new_volume}:/to" "${image}" \
             -c 'list=$(mktemp) && cd /from && find . -mindepth 1 -maxdepth 1 ! -name "prompt*.txt" ! -name tg_prompt.txt ! -name .migration-started > "$list" && while IFS= read -r entry; do rm -rf "/to/$entry" && cp -a "$entry" /to/ || exit 1; done < "$list"' \
