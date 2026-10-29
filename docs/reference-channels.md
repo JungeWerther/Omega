@@ -40,7 +40,7 @@ IRC adapter bound to a services account.
 - `start_irc(channel, server, port, nick, tls, require_account, allow_plaintext)` — connect (TLS by default, certificate verified), request the `account-tag` capability, and join `channel` if one is set.
 - `auth <secret>` is accepted only in a private message to the bot (`/msg <bot> auth <secret>`). A secret posted in a channel is never checked; the sender gets a notice to rotate it.
 - The owner is the services account that sent the secret (`account:<name>`), or `mask:<ident>@<host>` with `IRC_requireAccount=False`. Another user taking the owner's nickname is ignored.
-- Replies go where the owner last spoke: privately, or in the channel.
+- Replies go where the owner last spoke: privately, or in the channel. A private reply is sent only while the owner is known to hold that nickname (MONITOR, or `IRC_privateReplyTTL` without it); otherwise it waits until the owner speaks again, so someone who takes the nick receives nothing.
 - Uses Libera.Chat (`irc.libera.chat:6697`) by default. Owner records from older versions (bare nicknames) are not trusted; authenticate once again after upgrading.
 
 ## `channels/mattermost.py`

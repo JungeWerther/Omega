@@ -76,6 +76,9 @@ IRC_allowPlaintext: false
 # Bind the owner to a services account (true) or, for networks without
 # account tags such as QuakeNet, to ident@host (false)
 IRC_requireAccount: true
+# On servers without MONITOR, how long (seconds) after the owner's last
+# message private replies may still go to that nickname before being held
+IRC_privateReplyTTL: 600
 # IRC nickname; the launcher picks a random one per install
 IRC_user: "omega"
 

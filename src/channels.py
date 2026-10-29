@@ -8,6 +8,16 @@ logger = logging.getLogger(__name__)
 _commChannelRegistry = {}
 
 
+# Identifier each channel stores its owner records under, when it differs
+# from the upper-cased channel name. IRC owners are services accounts stored
+# under IRC_IDENTITY; old nickname records under "IRC" are not trusted.
+AUTH_CHANNEL_IDS = {"irc": "IRC_IDENTITY"}
+
+
+def auth_channel_id(commchannel_id: str) -> str:
+    return AUTH_CHANNEL_IDS.get(commchannel_id.lower(), commchannel_id.upper())
+
+
 def local_export_principal(commchannel_id: str) -> str | None:
     """Principal allowed to export memory, computed where the channel runs."""
     if commchannel_id == "websocket":
@@ -23,7 +33,7 @@ def local_export_principal(commchannel_id: str) -> str | None:
 
     if not is_auth_enabled():
         return None
-    return get_channel_authenticated_user_id(commchannel_id.upper())
+    return get_channel_authenticated_user_id(auth_channel_id(commchannel_id))
 
 
 def _authenticated_export_principal() -> str | None:

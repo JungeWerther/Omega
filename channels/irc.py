@@ -17,6 +17,11 @@ so the adapter does not trust either:
 * Replies go back where the owner spoke: a private message when the owner
   wrote privately, the channel otherwise. Without IRC_channel the bot joins
   no channel at all and talks to the owner privately only.
+* A private reply goes to the owner's nickname only while the owner is
+  known to still hold it: the owner sent an authenticated message, and
+  neither MONITOR reported the nick offline nor (on servers without
+  MONITOR) IRC_privateReplyTTL seconds passed. Otherwise replies stay queued
+  until the owner speaks again, so a reused nickname receives nothing.
 """
 
 import random
@@ -38,9 +43,10 @@ logger = get_logger(__name__)
 # Owner records written by this adapter. Older versions stored bare
 # nicknames under "IRC"; those are deliberately not trusted any more, so the
 # owner authenticates once again after upgrading.
-AUTH_CHANNEL_ID = "IRC_IDENTITY"
+AUTH_CHANNEL_ID = channels.auth_channel_id("irc")
 
 DEFAULT_SERVER = "irc.libera.chat"
+DEFAULT_PRIVATE_REPLY_TTL = 600
 TLS_PORT = 6697
 PLAINTEXT_PORT = 6667
 MAX_LINE_CHARS = 400
@@ -143,10 +149,28 @@ class _State:
     require_account: bool = True
     owner: str | None = None
     owner_nick: str = ""
+    owner_present: bool = False
+    owner_seen_at: float = 0.0
     reply_target: str = ""
-    connected: bool = False
+    registered: bool = False
+    joined: bool = False
     account_tags: bool = False
+    monitor: bool = False
+    private_reply_ttl: float = DEFAULT_PRIVATE_REPLY_TTL
     warned_public_auth: set = field(default_factory=set)
+
+    def is_channel(self, target):
+        return target[:1] in ("#", "&")
+
+    def can_reach(self, target, now):
+        """Whether a message for `target` may be sent right now."""
+        if not target:
+            return False
+        if self.is_channel(target):
+            return self.joined
+        return (self.registered and self.owner_present
+                and target.lower() == self.owner_nick.lower()
+                and (self.monitor or now - self.owner_seen_at < self.private_reply_ttl))
 
 
 _state = _State()
@@ -212,10 +236,23 @@ def _handle_auth(line, private, text):
     if result in ("auth_bound", "allow"):
         with _state_lock:
             _state.owner = identity
-            _state.owner_nick = line.nick
-            _state.reply_target = line.nick
+        _owner_spoke(line.nick, line.nick)
         return "Authentication successful."
     return None
+
+
+def _owner_spoke(nick, reply_target):
+    """Record an authenticated message from the owner."""
+    with _state_lock:
+        nick_changed = nick.lower() != _state.owner_nick.lower()
+        _state.owner_nick = nick
+        _state.owner_present = True
+        _state.owner_seen_at = time.monotonic()
+        _state.reply_target = reply_target
+        watch = _state.monitor and nick_changed
+    if watch:
+        _send("MONITOR C")
+        _send(f"MONITOR + {nick}")
 
 
 def handle_privmsg(line):
@@ -236,9 +273,7 @@ def handle_privmsg(line):
     if not allowed:
         return None, None
 
-    with _state_lock:
-        _state.owner_nick = line.nick
-        _state.reply_target = line.nick if private else target
+    _owner_spoke(line.nick, line.nick if private else target)
     return f"{line.nick}: {text}", None
 
 
@@ -251,6 +286,7 @@ def _on_line(line):
         with _state_lock:
             if line.params:
                 _state.nick = line.params[0]
+            _state.registered = True
             channel = _state.channel
         if not _state.account_tags and _state.require_account:
             logger.error("IRC server does not provide account tags: nobody can authenticate. "
@@ -258,11 +294,21 @@ def _on_line(line):
                          "IRC_requireAccount=False to bind the owner to ident@host.")
         if channel:
             _send(f"JOIN {channel}")
-        else:
-            _mark_connected()
+        _flush_outbox()
+    elif line.command == "005":
+        if any(token.split("=", 1)[0] == "MONITOR" for token in line.params[1:]):
+            with _state_lock:
+                _state.monitor = True
     elif line.command == "366" and len(line.params) > 1 and line.params[1].lower() == _state.channel.lower():
         logger.info(f"Joined {_state.channel}")
-        _mark_connected()
+        with _state_lock:
+            _state.joined = True
+        _flush_outbox()
+    elif line.command == "731" and len(line.params) > 1:
+        offline = {entry.split("!", 1)[0].lower() for entry in line.params[1].split(",")}
+        with _state_lock:
+            if _state.owner_nick.lower() in offline:
+                _state.owner_present = False
     elif line.command in {"403", "405", "471", "473", "474", "475"}:
         logger.error(f"Join failed: {line.command} {' '.join(line.params)}")
     elif line.command == "433":
@@ -273,6 +319,7 @@ def _on_line(line):
             _set_last(forward)
         if reply:
             _notice(line.nick, reply)
+        _flush_outbox()
 
 
 def _on_cap(subcommand, capabilities):
@@ -283,17 +330,11 @@ def _on_cap(subcommand, capabilities):
         _send("CAP END")
 
 
-def _mark_connected():
-    with _state_lock:
-        _state.connected = True
-    _flush_outbox()
-
-
 # -- delivery ----------------------------------------------------------------
 
 def _ready_to_send():
     with _state_lock:
-        return _state.connected and bool(_state.reply_target)
+        return _state.can_reach(_state.reply_target, time.monotonic())
 
 
 def _deliver_outbound(chunk):
@@ -352,7 +393,13 @@ def _irc_session(server, port, tls, nick):
     with _state_lock:
         _state.nick = nick
         _state.account_tags = False
-        _state.connected = False
+        _state.monitor = False
+        _state.registered = False
+        _state.joined = False
+        # A new session cannot vouch for whoever holds the owner's nick now.
+        _state.owner_present = False
+        _state.owner_nick = ""
+        _state.reply_target = _state.channel
 
     try:
         _send("CAP REQ :account-tag")
@@ -379,7 +426,8 @@ def _irc_session(server, port, tls, nick):
                         logger.exception(f"Failed to handle IRC line: {exc}")
     finally:
         with _state_lock:
-            _state.connected = False
+            _state.registered = False
+            _state.joined = False
         with _sock_lock:
             if _sock is sock:
                 _sock = None
@@ -409,7 +457,8 @@ def _irc_loop(server, port, tls, base_nick):
 
 
 def start_irc(channel="", server=DEFAULT_SERVER, port=None, nick="omega",
-              tls=True, require_account=True, allow_plaintext=False):
+              tls=True, require_account=True, allow_plaintext=False,
+              private_reply_ttl=DEFAULT_PRIVATE_REPLY_TTL):
     global _running
     if not tls and not allow_plaintext:
         raise ValueError("IRC without TLS sends the secret and every message in clear text; "
@@ -425,6 +474,7 @@ def start_irc(channel="", server=DEFAULT_SERVER, port=None, nick="omega",
         _state.require_account = require_account
         _state.owner = owner
         _state.reply_target = channel
+        _state.private_reply_ttl = float(private_reply_ttl)
         _state.warned_public_auth = set()
 
     _running = True
@@ -456,6 +506,7 @@ class IRCChannel(channels.CommChannel):
             tls=_flag("IRC_tls", True),
             require_account=_flag("IRC_requireAccount", True),
             allow_plaintext=_flag("IRC_allowPlaintext", False),
+            private_reply_ttl=config_get_by_key("IRC_privateReplyTTL", DEFAULT_PRIVATE_REPLY_TTL),
         )
 
     def stop(self) -> None:

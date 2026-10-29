@@ -57,6 +57,7 @@ Local model loading still happens before indexing and can delay cold startup.
 | `IRC_tls` | `true` | Connect with TLS and verify the server certificate. |
 | `IRC_allowPlaintext` | `false` | Must be `true` to run with `IRC_tls: false`. The secret and every message then travel in clear text. |
 | `IRC_requireAccount` | `true` | Bind the owner to a services account via IRCv3 `account-tag`. Set `false` on networks without it (QuakeNet) to bind to `ident@host` instead. |
+| `IRC_privateReplyTTL` | 600 | Seconds after the owner's last message that private replies may still go to that nickname on servers without MONITOR. With MONITOR, replies are held as soon as the owner's nick goes offline. Held replies are sent when the owner speaks again. |
 | `IRC_user` | `omega` | IRC nickname. The launcher picks `omega` plus six random hex digits. If the nick is taken, digits are appended and logged. |
 | `TG_CHAT_ID` | *(empty)* | Legacy single-chat bootstrap/fallback, primarily for authentication-disabled deployments. With authentication enabled, the authenticated owner's DM becomes the proactive-message default. |
 | `TG_ALLOWED_CHAT_IDS` | *(empty)* | Optional comma-separated initial allowed-chat set. The authenticated owner can add groups with `/bind` and remove them with `/unbind`; those changes are persisted in `authStateDir/authenticated-group.json` (the gate volume in Docker), not written back to YAML. |

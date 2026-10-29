@@ -32,7 +32,8 @@ def irc(monkeypatch, tmp_path):
     module = importlib.import_module("irc")
     module._sent = []
     monkeypatch.setattr(module, "_send", module._sent.append)
-    module._state = module._State(nick="omega1234", require_account=True)
+    module._state = module._State(nick="omega1234", require_account=True, registered=True)
+    module._outbox.clear()
     module.getLastMessage()
     return module
 
@@ -156,12 +157,114 @@ def test_outbound_lines_cannot_inject_commands(irc):
 
 
 def test_agent_text_is_wrapped_into_single_lines(irc):
-    irc._state.connected = True
-    irc._state.reply_target = "alice"
+    irc.handle_privmsg(privmsg(irc, f"auth {SECRET}"))
+    irc._sent.clear()
 
     irc.send_message("hello\nQUIT :bye")
 
     assert irc._sent == ["PRIVMSG alice :hello QUIT :bye"]
+
+
+# -- delivery safety ---------------------------------------------------------
+
+def _privmsgs(irc):
+    return [line for line in irc._sent if line.startswith("PRIVMSG")]
+
+
+def _owner_authenticated(irc, monitor=True):
+    irc._state.monitor = monitor
+    irc._on_line(privmsg(irc, f"auth {SECRET}"))
+
+
+def test_queued_output_is_flushed_once_the_owner_authenticates(irc):
+    irc.send_message("Omega v1.2.3")  # e.g. the startup version, before any owner
+    assert _privmsgs(irc) == []
+
+    _owner_authenticated(irc)
+
+    assert "PRIVMSG alice :Omega v1.2.3" in _privmsgs(irc)
+
+
+def test_owner_nick_is_monitored(irc):
+    _owner_authenticated(irc)
+
+    assert "MONITOR + alice" in irc._sent
+
+
+def test_reply_is_held_when_the_owner_goes_offline_and_the_nick_is_reused(irc):
+    _owner_authenticated(irc)
+    irc._sent.clear()
+
+    irc._on_line(irc.parse_line(":srv 731 omega1234 :alice"))       # owner left
+    irc._on_line(irc.parse_line(":srv 730 omega1234 :alice!~m@evil"))  # someone took the nick
+    irc._on_line(privmsg(irc, "hi", account=None, ident="~m", host="evil"))
+    irc.send_message("secret result")
+
+    assert _privmsgs(irc) == []
+
+    irc._on_line(privmsg(irc, "back again", nick="alice_"))  # owner, new nick, same account
+
+    assert _privmsgs(irc) == ["PRIVMSG alice_ :secret result"]
+
+
+def test_without_monitor_private_replies_expire(irc, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(irc.time, "monotonic", lambda: clock[0])
+    irc._state.private_reply_ttl = 600
+    _owner_authenticated(irc, monitor=False)
+    irc._sent.clear()
+
+    clock[0] += 601
+    irc.send_message("late reply")
+    assert _privmsgs(irc) == []
+
+    irc._on_line(privmsg(irc, "still here"))
+    assert _privmsgs(irc) == ["PRIVMSG alice :late reply"]
+
+
+def test_private_replies_work_when_the_channel_join_failed(irc):
+    irc._state.channel = "#closed"
+    irc._on_line(irc.parse_line(":srv 474 omega1234 #closed :Cannot join channel (+b)"))
+    _owner_authenticated(irc)
+    irc._sent.clear()
+
+    irc.send_message("private answer")
+
+    assert _privmsgs(irc) == ["PRIVMSG alice :private answer"]
+
+
+def test_channel_replies_wait_for_the_join(irc):
+    irc._state.channel = "#chan"
+    _owner_authenticated(irc)
+    irc._on_line(privmsg(irc, "say it in public", target="#chan"))
+    irc._sent.clear()
+
+    irc.send_message("public answer")
+    assert _privmsgs(irc) == []
+
+    irc._on_line(irc.parse_line(":srv 366 omega1234 #chan :End of /NAMES list."))
+    assert _privmsgs(irc) == ["PRIVMSG #chan :public answer"]
+
+
+def test_isupport_monitor_is_detected(irc):
+    irc._on_line(irc.parse_line(":srv 005 omega1234 CHANTYPES=# MONITOR=100 :are supported"))
+
+    assert irc._state.monitor is True
+
+
+def test_export_principal_uses_the_irc_identity_records(irc, tmp_path):
+    import channels as channel_api
+
+    state = tmp_path / "gate"
+    state.mkdir(mode=0o700, exist_ok=True)
+    (state / "authenticated-user.json").write_text(
+        '{"time":"t","channel_identifier":"IRC","user_id":"legacy-nick"}\n')
+
+    assert channel_api.auth_channel_id("irc") == "IRC_IDENTITY"
+    assert channel_api.local_export_principal("irc") is None
+
+    irc.handle_privmsg(privmsg(irc, f"auth {SECRET}"))
+    assert channel_api.local_export_principal("irc") == "account:alice"
 
 
 # -- transport ---------------------------------------------------------------
