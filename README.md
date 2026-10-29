@@ -139,10 +139,10 @@ Before running the system you need to choose your LLM API provider and export th
 
 Run the system via the following command which ensures the system is started from the root folder of PeTTa:
 ```
-OMEGA_AUTH_SECRET=<channel-secret> sh run.sh run.metta IRC_channel="<irc-channel>"
+OMEGA_AUTH_SECRET=<channel-secret> sh run.sh run.metta IRC_user="<bot-nick>"
 ```
 Use a long random `<channel-secret>` (for example `python3 -c 'import secrets; print(secrets.token_urlsafe(18))'`). Without one, nobody can authenticate. Outside Docker the agent can edit its own auth records; see [channel authentication](docs/reference-channel-auth.md).
-After start go to https://webchat.quakenet.org/ to communicate with the agent. Join `<irc-channel>` and after agent is joined send `auth <channel-secret>` message to authenticate yourself as an agent owner. Please replace `<irc-channel>` and `<channel-secret>` by your own values.
+After start, connect to irc.libera.chat with TLS (for example https://web.libera.chat/), identify your nickname with NickServ, and send `/msg <bot-nick> auth <channel-secret>` as a private message to become the agent's owner. Never post the secret in a channel. Add `IRC_channel="<irc-channel>"` to also talk in a channel.
 
 ### Import Knowledge
 

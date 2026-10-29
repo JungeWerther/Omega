@@ -22,7 +22,6 @@ ASICloud + `ASI_API_KEY`, OpenAI + `OPENAI_API_KEY`).
 ```
 docker run -d -it \
   --name <CONTAINER_NAME> \
-  --user 65534:65534 \
   --init \
   --network bridge \
   --security-opt no-new-privileges:true \
@@ -31,9 +30,10 @@ docker run -d -it \
   --tmpfs /run:size=16m,mode=755 \
   --tmpfs /var/tmp:size=64m,mode=1777,exec \
   -e <PROVIDER_KEY_ENV>="<KEY>" \
-  -e OMEGA_AUTH_SECRET=0000 \
+  -e OMEGA_AUTH_SECRET="<SECRET>" \
   singularitynet/omega:<IMAGE_SHA> \
-  IRC_channel="<CHANNEL>" \
+  IRC_user="<BOT_NICK>" \
+  IRC_requireAccount=False \
   provider="<PROVIDER_NAME>" \
   embeddingprovider="Local"
 ```
@@ -43,7 +43,6 @@ docker run -d -it \
 | Parameter | Required | Description |
 |---|---|---|
 | `--name <CONTAINER_NAME>` | Yes | Container name. Must equal `OMEGA_CONTAINER` on the host shell. |
-| `--user 65534:65534` | No | Runs the agent as `nobody:nogroup`. Recommended; matches the image default. |
 | `--init` | Yes | Uses tini as PID 1 to reap zombie processes spawned by `(run ...)` and `(create-script ...)`. |
 | `--network bridge` | Yes | Outbound network for IRC, LLM API, search, embeddings. |
 | `--volume omega-memory:<.../memory/>` | Yes | Persists ChromaDB and `history.metta` across container restarts. Tests run fine without it within one session. |
@@ -51,9 +50,10 @@ docker run -d -it \
 | `--tmpfs /var/tmp:...,exec` | Yes | Same as `/tmp`; some tests use `/var/tmp`. |
 | `--tmpfs /run:...` | No | System runtime files; no scripts run from here. |
 | `-e <PROVIDER_KEY_ENV>` | Yes | API key for the chosen LLM provider (`ANTHROPIC_API_KEY` / `ASI_API_KEY` / `OPENAI_API_KEY`). |
-| `-e OMEGA_AUTH_SECRET=0000` | Yes | IRC authorization secret. The first nick that sends `auth <secret>` binds; later nicks are ignored. `helpers.py` sends `auth 0000` hard-coded, so the value must stay `0000`. |
+| `-e OMEGA_AUTH_SECRET="<SECRET>"` | Yes | Owner secret. `helpers.py` sends `auth <secret>` privately to the bot once per session; the same value must be exported as `OMEGA_AUTH_SECRET` for pytest. |
 | `singularitynet/omega:<IMAGE_SHA>` | Yes | Image pinned by full SHA. Tests are written against a specific build of skill semantics. |
-| `IRC_channel="<CHANNEL>"` | Yes | Channel the agent joins on irc.quakenet.org. Must equal `OMEGA_IRC_CHANNEL` on the host shell. |
+| `IRC_user="<BOT_NICK>"` | Yes | The agent's nick on irc.libera.chat. Must equal `OMEGA_IRC_BOT` on the host shell. |
+| `IRC_requireAccount=False` | Yes | The test driver has no NickServ account, so the owner is bound to the driver's `ident@host`. Do not use this setting outside tests on networks that have services. |
 | `provider="<PROVIDER_NAME>"` | Yes | LLM provider: Anthropic / ASICloud / OpenAI. Must match the API key supplied above. |
 | `embeddingprovider="Local"` | Yes | Local sentence-transformers in-container. OpenAI is also supported but consumes credits and adds latency. |
 
@@ -63,14 +63,17 @@ Export these on the host shell before running pytest:
 
 ```
 export OMEGA_CONTAINER="<CONTAINER_NAME>"
-export OMEGA_IRC_CHANNEL="<CHANNEL>"
+export OMEGA_IRC_BOT="<BOT_NICK>"
+export OMEGA_AUTH_SECRET="<SECRET>"
 export OMEGA_GIT_TOKEN="<GITHUB_PAT>"
 ```
 
 | Variable | Required | Description |
 |---|---|---|
 | `OMEGA_CONTAINER` | Yes | Name passed to `docker exec`. Must equal `--name` above. Default in `helpers.py` is `omega`. |
-| `OMEGA_IRC_CHANNEL` | Yes | Channel for PRIVMSG. Must equal `IRC_channel` above. Default in `helpers.py` is `#metaclaw777`. |
+| `OMEGA_IRC_BOT` | Yes | Agent nick to send private messages to. Must equal `IRC_user` above. |
+| `OMEGA_AUTH_SECRET` | Yes | Same secret as passed to the container. |
+| `OMEGA_IRC_SERVER` / `OMEGA_IRC_PORT` / `OMEGA_IRC_TLS` | No | Defaults `irc.libera.chat`, `6697`, TLS on (`0` disables). |
 | `OMEGA_GIT_TOKEN` | No | GitHub PAT used by `test_git_push_to_remote`. The test is skipped if this variable is unset. |
 | `OMEGA_GIT_REMOTE` | No | Override the test remote. Default `https://github.com/OmegaSing/Test-Repopo`. |
 
@@ -90,9 +93,7 @@ pytest -s -v test_*.py
   directories.
 - The tests verify functionality of the agent's skills. Each skill has several core functions that
   are covered by tests, either individually or in combination.
-- When launching the container, use Authorization Key `0000`. To use a different value, edit the
-  line `sock.sendall(f"PRIVMSG {CHANNEL} :auth 0000\r\n".encode())` in `helpers.py` before
-  starting the tests.
+- The driver authenticates once per session with `OMEGA_AUTH_SECRET`, privately to `OMEGA_IRC_BOT`.
 - Tests will be expanded as we go deeper into the project.
 
 ## 6. Grading: 0 / 1 / 2

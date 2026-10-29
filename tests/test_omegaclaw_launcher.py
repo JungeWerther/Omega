@@ -672,3 +672,28 @@ def test_clean_removes_the_gate_volume(tmp_path):
                             capture_output=True, text=True, check=False)
 
     assert "docker <volume> <rm> <omega-gate>" in result.stdout
+
+
+def test_irc_defaults_to_private_messages_with_a_unique_nick(tmp_path):
+    result = _run_launcher(tmp_path, "-t", "irc", memory_import=False)
+
+    agent_run = _agent_run(result)
+    assert "IRC_channel=" not in agent_run
+    assert "##omega" not in agent_run
+    nick = agent_run.split("<IRC_user=", 1)[1].split(">", 1)[0]
+    assert nick.startswith("omega") and len(nick) == len("omega") + 6
+    assert f"/msg {nick} auth <secret>" in result.stdout
+
+
+def test_irc_channel_is_passed_when_requested(tmp_path):
+    result = _run_launcher(tmp_path, "-t", "irc", "-c", "#mine", memory_import=False)
+
+    assert "<IRC_channel=#mine>" in _agent_run(result)
+
+
+def test_installer_offers_private_irc_without_a_channel(monkeypatch):
+    namespace = _load_installer_namespace()
+    answers = iter(["1", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert namespace["_choose_channel"]() == {"commchannel": "irc", "IRC_channel": ""}
