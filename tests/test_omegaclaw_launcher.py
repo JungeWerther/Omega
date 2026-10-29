@@ -697,3 +697,9 @@ def test_installer_offers_private_irc_without_a_channel(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     assert namespace["_choose_channel"]() == {"commchannel": "irc", "IRC_channel": ""}
+
+
+def test_container_has_a_process_limit(tmp_path):
+    result = _run_launcher(tmp_path, memory_import=False)
+
+    assert "<--pids-limit> <512>" in _agent_run(result)

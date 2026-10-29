@@ -1,13 +1,32 @@
+% Path of contain.py, the supervisor that runs each shell command and kills
+% every process it leaves behind (including setsid/nohup/double-fork
+% escapes). Recorded while this file is consulted, so it is found next to
+% skills.pl wherever the repository lives.
+:- dynamic omega_contain_script/1.
+:- (   prolog_load_context(directory, Dir)
+   ->  directory_file_path(Dir, 'contain.py', Script),
+       retractall(omega_contain_script(_)),
+       assertz(omega_contain_script(Script))
+   ;   true
+   ).
+
+shell_timeout_seconds('5').
+
 %Gets shell command return, plus the process if time limit is not met, returning timeout_error:
 shell(Cmd, Out) :-
+    (   omega_contain_script(Script), exists_file(Script)
+    ->  true
+    ;   throw(error(existence_error(file, 'src/contain.py'), shell/2))
+    ),
+    shell_timeout_seconds(Seconds),
     tmp_file_stream(text, TmpFile, TmpInit),
     close(TmpInit),
     open(TmpFile, write, TmpOut, [type(text)]),
     catch(
         setup_call_cleanup(
             process_create(
-                path(timeout),
-                ['-k', '1s', '5s', 'sh', '-c', Cmd],
+                path(python3),
+                ['-I', Script, Seconds, '--', 'sh', '-c', Cmd],
                 [ stdout(stream(TmpOut)),
                   stderr(stream(TmpOut)),
                   process(P)

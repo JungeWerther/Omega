@@ -27,8 +27,9 @@ The captured stdout of the command as a string.
 ```
 
 ### Notes / Limits
-- Runs with the permissions of the Omega process.
-- No sandboxing. Run in a container for anything resembling untrusted use.
+- Runs with the permissions of the Omega process, inside its Landlock filesystem sandbox.
+- Each command runs under `src/contain.py`, a supervisor that becomes a child subreaper. Commands time out after 5 seconds (`timeout_error`). When a command exits or times out, every process it started is killed, including ones detached with `setsid`, `nohup`, `&` or a double fork. Nothing can keep running in the background after the skill returns.
+- In Docker the container also has a process limit (`--pids-limit`, default 512) as a backstop against fork bombs.
 - Prefer writing complex commands to a file and invoking the file rather than embedding quotes-within-quotes.
 
 ---
