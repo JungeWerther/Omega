@@ -12,8 +12,15 @@ CHANNELS_DIRECTORY = REPO_ROOT / "channels"
 
 
 def load_telegram(monkeypatch, auth_enabled=True):
-    state = {"owner": None, "groups": set()}
+    state = {"owner": None, "groups": set(), "tiers": {}}
     auth = types.ModuleType("auth")
+    auth.TIER_CHAT, auth.TIER_TOOLS = "chat", "tools"
+    auth.get_channel_group_tier = lambda channel, group: (
+        state["tiers"].get(str(group), "chat") if (channel, str(group)) in state["groups"] else None
+    )
+    auth.load_channel_group_tiers = lambda channel: {
+        group: state["tiers"].get(group, "chat") for c, group in state["groups"] if c == channel
+    }
     auth.is_auth_enabled = lambda: auth_enabled
     auth.get_proxy_url = lambda: ""
     auth.load_channel_auth_state = lambda _channel: (
@@ -31,10 +38,11 @@ def load_telegram(monkeypatch, auth_enabled=True):
         state["owner"] = str(user)
         return "auth_bound"
 
-    def authorize_channel_group(channel, group, requester):
+    def authorize_channel_group(channel, group, requester, tier="chat"):
         if str(requester) != state["owner"]:
             return "ignore"
         state["groups"].add((channel, str(group)))
+        state["tiers"][str(group)] = tier
         return "group_bound"
 
     def revoke_channel_group(channel, group, requester):

@@ -1225,6 +1225,8 @@ if sys.argv[1]:
             -e OMEGA_AUTH_SECRET="$OMEGA_AUTH_SECRET"
             -e OMEGA_WS_TOKEN="${WS_TOKEN:-}"
             -e IMPORT_KB_ON_START="${IMPORT_KB_ON_START:-0}"
+            -e OMEGA_LLM_RATE_PER_MINUTE="${OMEGA_LLM_RATE_PER_MINUTE:-30}"
+            -e OMEGA_LLM_BURST="${OMEGA_LLM_BURST:-10}"
             ${memory_import_env[@]+"${memory_import_env[@]}"}
             "$image"
             "commchannel=${commchannel}"

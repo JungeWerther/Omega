@@ -66,6 +66,16 @@ Parent domains are deliberately not allowed: `google.com` would include
 `docs.google.com` (public forms anyone can post to), and Wikipedia accepts
 anonymous edits.
 
+## LLM budget
+
+The agent can call the provider routes on nginx directly, so they are rate
+limited: all provider routes share one budget of
+`OMEGA_LLM_RATE_PER_MINUTE` requests per minute (default 30), with bursts
+of `OMEGA_LLM_BURST` (default 10). Requests beyond it get `429`, which
+the OpenAI client retries with backoff. Request bodies on those routes are
+capped at 4 MiB. Set both variables in the container environment (the
+launcher passes them through).
+
 ## Configuration
 
 | Launcher option | Setting | Effect |

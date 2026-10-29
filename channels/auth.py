@@ -320,7 +320,18 @@ def load_channel_auth_state(channel_identifier):
     return owner_id, authorized_groups
 
 
-def store_channel_authenticated_group_id(channel_identifier, group_id, authorized_by_user_id):
+# Group tiers. In a "chat" group, members can talk to the agent, but what
+# they write is handled as untrusted input: it cannot approve held actions,
+# and actions it leads to need the owner's approval. A "tools" group's
+# members act with the owner's authority. Records written before tiers
+# existed count as "chat".
+TIER_CHAT = "chat"
+TIER_TOOLS = "tools"
+TIERS = (TIER_CHAT, TIER_TOOLS)
+
+
+def store_channel_authenticated_group_id(channel_identifier, group_id, authorized_by_user_id,
+                                         tier=TIER_CHAT):
     """Persist a trusted group. Never touches the single-user auth file."""
     channel_identifier = str(channel_identifier or "").strip()
     group_id = str(group_id or "").strip()
@@ -331,12 +342,15 @@ def store_channel_authenticated_group_id(channel_identifier, group_id, authorize
         raise ValueError("group_id is required")
     if not authorized_by_user_id:
         raise ValueError("authorized_by_user_id is required")
+    if tier not in TIERS:
+        raise ValueError(f"tier must be one of {TIERS}")
 
     payload = {
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "channel_identifier": channel_identifier,
         "group_id": group_id,
         "authorized_by": authorized_by_user_id,
+        "tier": tier,
     }
     path = _channel_auth_group_path()
     try:
@@ -381,12 +395,51 @@ def get_channel_saved_group_id(channel_identifier, group_id):
     return authorized
 
 
-def authorize_channel_group(channel_identifier, group_id, requester_user_id):
+def get_channel_group_tier(channel_identifier, group_id):
+    """The tier of an authorized group (latest record wins), or None."""
+    channel_identifier = str(channel_identifier or "").strip()
+    group_id = str(group_id or "").strip()
+    owner_id = get_channel_authenticated_user_id(channel_identifier)
+    if owner_id is None or not group_id:
+        return None
+    tier = None
+    try:
+        with open(_channel_auth_group_path(), "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (not isinstance(record, dict)
+                        or str(record.get("channel_identifier", "")).strip() != channel_identifier
+                        or str(record.get("group_id", "")).strip() != group_id
+                        or str(record.get("authorized_by", "")).strip() != owner_id):
+                    continue
+                if record.get("revoked"):
+                    tier = None
+                else:
+                    recorded = record.get("tier")
+                    tier = recorded if recorded in TIERS else TIER_CHAT
+    except FileNotFoundError:
+        return None
+    return tier
+
+
+def load_channel_group_tiers(channel_identifier):
+    """{group_id: tier} for every authorized group of the channel."""
+    _, groups = load_channel_auth_state(channel_identifier)
+    return {group: get_channel_group_tier(channel_identifier, group) or TIER_CHAT for group in groups}
+
+
+def authorize_channel_group(channel_identifier, group_id, requester_user_id, tier=TIER_CHAT):
     """
     Open a group chat to all its members -- but ONLY when requester_user_id
-    matches the persisted owner for this channel
+    matches the persisted owner for this channel. Binding an authorized group
+    again with another tier changes its tier (owner only).
     """
-    if get_channel_saved_group_id(channel_identifier, group_id):
+    current = get_channel_group_tier(channel_identifier, group_id)
+    if current is not None and (current == tier or str(requester_user_id or "").strip()
+                                != get_channel_authenticated_user_id(channel_identifier)):
         return "allow"
 
     owner_id = get_channel_authenticated_user_id(channel_identifier)
@@ -397,8 +450,8 @@ def authorize_channel_group(channel_identifier, group_id, requester_user_id):
     if str(requester_user_id or "").strip() != owner_id:
         return "ignore"
 
-    if store_channel_authenticated_group_id(channel_identifier, group_id, owner_id):
-        logger.info(f"[{str(channel_identifier).upper()}] Saved authorized group ID")
+    if store_channel_authenticated_group_id(channel_identifier, group_id, owner_id, tier):
+        logger.info(f"[{str(channel_identifier).upper()}] Saved authorized group ID (tier {tier})")
         return "group_bound"
 
     logger.error(f"[{str(channel_identifier).upper()}] ERROR -- Unable to save group ID")

@@ -135,7 +135,8 @@ def bind_channel_routes(channels_module, commchannel_id):
 
     @route("GET", "/v1/receive")
     def receive(_body):
-        return {"message": channels_module.commChannelReceiveRaw() or ""}
+        message, trusted = channels_module.commChannelReceiveWithTrust()
+        return {"message": message or "", "trusted": bool(trusted)}
 
     @route("POST", "/v1/send")
     def send(body):
