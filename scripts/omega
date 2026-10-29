@@ -1184,6 +1184,7 @@ if sys.argv[1]:
         docker run -d -it
             --name omega
             --security-opt no-new-privileges:true
+            --pids-limit "${OMEGA_PIDS_LIMIT:-512}"
             --init
             --add-host=host.docker.internal:host-gateway
             --tmpfs /tmp:size=64m,mode=1777
