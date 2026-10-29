@@ -92,7 +92,8 @@ su www-data -s /bin/sh -c "sh /opt/nginx/nginx.sh"
 # and never appear in any process's argv (/proc/<pid>/cmdline is readable by
 # every user, including the agent).
 run_gate() {
-  local name
+  # Capture what the supervisor needs before the environment is cleared.
+  local name omega_dir="${OMEGA_DIR}"
   for name in $(compgen -e); do
     case "${name}" in
       OMEGA_AUTH_SECRET|OMEGA_GATE_KEY|OMEGA_WS_TOKEN|TEST_SERVER_IP|LANG) ;;
@@ -104,10 +105,10 @@ run_gate() {
   export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
   export OMEGA_GATEWAY_URL="http://127.0.0.1:8080/gate/${OMEGA_GATE_KEY}"
   export OMEGA_authStateDir="${GATE_STATE_DIR}" OMEGA_gatePort="${GATE_PORT}"
-  cd "${OMEGA_DIR}"
+  cd "${omega_dir}"
   while :; do
     setpriv --reuid="${GATE_USER}" --regid="${GATE_USER}" --init-groups --no-new-privs \
-      python3 -I "${OMEGA_DIR}/gate/main.py" "$@" \
+      python3 -I "${omega_dir}/gate/main.py" "$@" \
       || echo "gate exited with status $?, restarting" >&2
     sleep 1
   done
