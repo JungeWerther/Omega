@@ -198,4 +198,4 @@ for var in $SAFE_VARS; do
   fi
 done
 
-exec env -i $env_args "${agent_su[@]}" -s /bin/sh -c "sh run.sh run.metta GATEWAY_URL=\"http://localhost:8080\" GATE_URL=\"http://127.0.0.1:${GATE_PORT}\" $*"
+exec env -i $env_args "${agent_su[@]}" -s /bin/sh -c "sh run.sh run.metta GATEWAY_URL=\"http://localhost:8080\" GATE_URL=\"http://127.0.0.1:${GATE_PORT}\" securityPolicyPath=${OMEGA_DIR}/profile/policy.yaml $*"

@@ -11,6 +11,7 @@ without Landlock.
 import functools
 import os
 import enum
+import shutil
 import site
 import subprocess
 import sys
@@ -128,9 +129,17 @@ class Probe:
     def attempt_in_child(self):
         """True only if a child process ran and was denied (exit 13); any
         other outcome, including a child that could not start, is not proof."""
-        child = subprocess.run([sys.executable, "-I", "-c", self._CHILD[self.kind], str(self.path)],
+        child = subprocess.run([python_interpreter(), "-I", "-c", self._CHILD[self.kind], str(self.path)],
                                capture_output=True, check=False)
         return child.returncode == _DENIED
+
+
+def python_interpreter():
+    """A Python executable for child probes. Inside the agent, Python is
+    embedded in SWI-Prolog and sys.executable is the swipl binary."""
+    if os.path.basename(sys.executable or "").startswith("python"):
+        return sys.executable
+    return shutil.which("python3") or "/usr/bin/python3"
 
 
 def read_probe(granted_paths, root=Path("/")):

@@ -49,7 +49,7 @@ memoryExportEnabled: false
 # Policy
 
 # Path to the security profile written using [OpenShell YAML](https://docs.nvidia.com/openshell/reference/policy-schema#filesystem-policy). See [./profile/policy.yaml](./profile/policy.yaml) as an example. Empty value disables restrictions.
-securityPolicyPath: "./repos/Omega/profile/policy.yaml"
+securityPolicyPath: "./repos/Omega/profile/policy-native.yaml"
 # (internal) URL to the Nginx proxy isolating API keys from agent
 #GATEWAY_URL:
 

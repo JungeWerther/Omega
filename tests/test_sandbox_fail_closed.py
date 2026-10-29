@@ -343,3 +343,25 @@ def test_native_policy_works_from_a_petta_checkout():
         "read code": "allowed", "write memory": "allowed", "write chroma": "allowed",
         "write code": "denied", "read outside": "denied", "import": "allowed",
     }
+
+
+def test_child_probe_uses_a_python_interpreter_when_embedded(monkeypatch, tmp_path):
+    """Inside the agent, Python runs embedded in SWI-Prolog."""
+    monkeypatch.setattr(policy.sys, "executable", "/usr/lib/swipl/bin/x86_64-linux/swipl")
+
+    assert Path(policy.python_interpreter()).name.startswith("python")
+    assert policy.Probe("read", tmp_path).attempt_in_child() is False  # readable, so not denied
+
+
+def test_native_policy_is_the_configured_default():
+    import yaml
+
+    config = yaml.safe_load((REPO_ROOT / "config" / "config.yaml").read_text())
+
+    assert config["securityPolicyPath"].endswith("profile/policy-native.yaml")
+
+
+def test_docker_entrypoint_selects_the_docker_policy():
+    entrypoint = (REPO_ROOT / "entrypoint.sh").read_text()
+
+    assert "securityPolicyPath=${OMEGA_DIR}/profile/policy.yaml $*" in entrypoint
