@@ -28,7 +28,7 @@ The captured stdout of the command as a string.
 
 ### Notes / Limits
 - Runs with the permissions of the Omega process, inside its Landlock filesystem sandbox.
-- Each command runs under `src/contain.py`, a supervisor that becomes a child subreaper. Commands time out after 5 seconds (`timeout_error`). When a command exits or times out, every process it started is killed, including ones detached with `setsid`, `nohup`, `&` or a double fork. Nothing can keep running in the background after the skill returns.
+- Each command runs under `src/contain.py`, a supervisor that becomes a child subreaper. Commands time out after 5 seconds (`timeout_error`). When a command exits or times out, every process it started is killed, including ones detached with `setsid`, `nohup`, `&` or a double fork. Nothing can keep running in the background after the skill returns. The agent process is a subreaper as well and sweeps its own descendants after every command, so killing the supervisor (`kill -9 $PPID`) does not help a command escape. If cleanup cannot stop every process, the skill returns `containment_error`; if the agent's own sweep fails, the agent exits (status 70), which in Docker stops the container.
 - In Docker the container also has a process limit (`--pids-limit`, default 512) as a backstop against fork bombs.
 - Prefer writing complex commands to a file and invoking the file rather than embedding quotes-within-quotes.
 

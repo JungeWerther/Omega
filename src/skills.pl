@@ -12,6 +12,23 @@
 
 shell_timeout_seconds('5').
 
+% The agent process becomes a subreaper on first use, and after every command
+% kills whatever escaped contain.py (for example by killing it). Both go
+% through janus; without it (plain swipl, tests) they are no-ops.
+:- dynamic agent_contained/0.
+contain_agent :-
+    (   agent_contained
+    ->  true
+    ;   catch(py_call(contain:agent_init(), _), _, true),
+        assertz(agent_contained)
+    ).
+
+sweep_agent :-
+    catch(py_call(contain:agent_sweep(), _), E,
+          ( E = error(existence_error(procedure, _), _)
+          -> true
+          ;  print_message(warning, E) )).
+
 %Gets shell command return, plus the process if time limit is not met, returning timeout_error:
 shell(Cmd, Out) :-
     (   omega_contain_script(Script), exists_file(Script)
@@ -19,6 +36,7 @@ shell(Cmd, Out) :-
     ;   throw(error(existence_error(file, 'src/contain.py'), shell/2))
     ),
     shell_timeout_seconds(Seconds),
+    contain_agent,
     tmp_file_stream(text, TmpFile, TmpInit),
     close(TmpInit),
     open(TmpFile, write, TmpOut, [type(text)]),
@@ -39,7 +57,8 @@ shell(Cmd, Out) :-
             ),
             (
                 catch(close(TmpOut), _, true),
-                catch(delete_file(TmpFile), _, true)
+                catch(delete_file(TmpFile), _, true),
+                sweep_agent
             )
         ),
         E,
@@ -49,7 +68,8 @@ shell(Cmd, Out) :-
             throw(E)
         )
     ),
-    ( Status = exit(124) -> Out = timeout_error
+    ( Status = exit(125) -> Out = containment_error
+    ; Status = exit(124) -> Out = timeout_error
     ; Status = exit(137) -> Out = timeout_error
     ; Status = killed(_) -> Out = timeout_error
     ; Out = Text

@@ -115,3 +115,60 @@ def test_skill_does_not_leave_a_detached_process(tmp_path):
 
     assert result.stdout == "ok\n", result.stderr
     assert not survives(marker)
+
+
+# -- a command that kills its supervisor -------------------------------------
+
+AGENT = """
+import subprocess, sys
+sys.path.insert(0, {src!r})
+import contain
+contain.agent_init()
+subprocess.run([sys.executable, "-I", {contain!r}, "5", "--", "sh", "-c", {command!r}])
+if {sweep}:
+    contain.agent_sweep()
+print("agent done")
+"""
+
+
+def run_agent(command, sweep):
+    script = AGENT.format(src=str(REPO_ROOT / "src"), contain=str(CONTAIN), command=command, sweep=sweep)
+    return subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True, timeout=60)
+
+
+KILL_SUPERVISOR = "setsid sh -c 'sleep 1; touch {m}' >/dev/null 2>&1 & kill -9 $PPID"
+
+
+def test_killing_the_supervisor_escapes_without_the_agent_sweep(tmp_path):
+    """Demonstrates the attack the agent-level sweep exists for."""
+    marker = tmp_path / "escaped"
+    result = run_agent(KILL_SUPERVISOR.format(m=marker), sweep=False)
+
+    assert "agent done" in result.stdout
+    assert survives(marker)
+
+
+def test_agent_sweep_kills_what_escaped_a_killed_supervisor(tmp_path):
+    marker = tmp_path / "escaped"
+    result = run_agent(KILL_SUPERVISOR.format(m=marker), sweep=True)
+
+    assert "agent done" in result.stdout, result.stderr
+    assert not survives(marker)
+
+
+def test_incomplete_cleanup_is_a_containment_failure():
+    script = (f"import sys; sys.path.insert(0, {str(REPO_ROOT / 'src')!r}); import contain; "
+              "contain.kill_descendants = lambda *a: False; sys.exit(contain.main(['5', '--', 'true']))")
+    result = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True)
+
+    assert result.returncode == 125
+    assert "could not be stopped" in result.stderr
+
+
+def test_agent_stops_when_its_sweep_cannot_finish():
+    script = (f"import sys; sys.path.insert(0, {str(REPO_ROOT / 'src')!r}); import contain; "
+              "contain.kill_descendants = lambda *a: False; contain.agent_sweep(); print('STILL RUNNING')")
+    result = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True)
+
+    assert result.returncode == 70
+    assert "STILL RUNNING" not in result.stdout

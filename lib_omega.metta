@@ -21,6 +21,7 @@
 !(import! &self (library Omega ./src/providers))
 !(import! &self (library Omega ./profile/policy))
 !(import! &self (library Omega ./src/fileio.py))
+!(import! &self (library Omega ./src/contain.py))
 !(import! &self (library Omega ./src/skills))
 !(import! &self (library Omega ./src/websearch.py))
 !(import! &self (library Omega ./src/memory))

@@ -8,12 +8,19 @@ to it instead of to init. When the command exits, or the timeout expires,
 every remaining descendant is killed. A command therefore cannot leave a
 reverse shell or any other process running after the skill returns.
 
-Exit status: the command's own status, or 124 when the timeout expired
-(the same convention as coreutils `timeout`, which the shell skill maps to
-`timeout_error`).
+The command runs as the same user, so it could kill this supervisor
+(`kill -9 $PPID`) before cleanup. The agent process is therefore a subreaper
+too (agent_init): anything orphaned that way lands on the agent, and the
+shell skill calls agent_sweep() after every command to kill it. The only
+process left to kill is the agent itself, which stops the container.
+
+Exit status: the command's own status, 124 when the timeout expired (the
+same convention as coreutils `timeout`, which the shell skill maps to
+`timeout_error`), or 125 when cleanup could not stop every process.
 """
 
 import ctypes
+import logging
 import os
 import signal
 import subprocess
@@ -22,7 +29,11 @@ import time
 
 PR_SET_CHILD_SUBREAPER = 36
 TIMEOUT_EXIT_CODE = 124
+CONTAINMENT_FAILURE_EXIT_CODE = 125
+AGENT_TEARDOWN_EXIT_CODE = 70  # EX_SOFTWARE
 KILL_ROUNDS = 50
+
+logger = logging.getLogger(__name__)
 
 
 def become_subreaper():
@@ -97,9 +108,28 @@ def run(timeout, command):
         status = TIMEOUT_EXIT_CODE
     if not kill_descendants():
         print("contain: some processes could not be stopped", file=sys.stderr)
+        return CONTAINMENT_FAILURE_EXIT_CODE
     if status < 0:  # killed by a signal
         status = 128 - status
     return status
+
+
+# -- the agent side ----------------------------------------------------------
+
+def agent_init():
+    """Make the calling (agent) process a subreaper. Idempotent."""
+    become_subreaper()
+    return True
+
+
+def agent_sweep():
+    """Kill every descendant of the agent process. Called by the shell skill
+    after each command. If they cannot all be stopped, the agent exits:
+    in Docker that ends the container and every process in it."""
+    if kill_descendants(os.getpid()):
+        return True
+    logger.critical("shell containment failed: processes outlived cleanup; stopping the agent")
+    os._exit(AGENT_TEARDOWN_EXIT_CODE)
 
 
 def main(argv):
