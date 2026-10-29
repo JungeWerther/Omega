@@ -68,6 +68,16 @@ def _loggable(key, value):
     return "***" if value and _SECRET_KEY.search(str(key)) else value
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def config_flag(key, default=False):
+    """A boolean setting: True only for an explicit true/1/yes/on, from any
+    source (a command-line value arrives as a string)."""
+    value = config_get_by_key(key, default)
+    return value is True or str(value).strip().lower() in _TRUTHY
+
+
 def _cache_config(key, value, source):
     global _CONFIG
     _CONFIG[key] = value

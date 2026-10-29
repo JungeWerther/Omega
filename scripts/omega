@@ -662,6 +662,7 @@ help() {
     echo -e "\t-l <logging config> set Python logging config file"
     echo -e "\t--allow-unsandboxed run the agent even if its Landlock sandbox cannot be applied (unsafe)"
     echo -e "\t--egress-allow <hosts> let the agent reach these hosts over HTTPS, comma-separated (*.example.com for subdomains)"
+    echo -e "\t--enable-metta-skill expose the metta skill (arbitrary MeTTa and Python; needed by some autotests)"
     echo -e "\t--allow-unrestricted-network let the agent connect anywhere, e.g. on kernels older than Linux 6.7 (unsafe)"
     echo -e "\t--version, -v show the Omega version"
     echo -e "\t--help, -h show this help"
@@ -729,6 +730,7 @@ options() {
     memory_export_enabled=0
     allow_unsandboxed=0
     allow_unrestricted_network=0
+    enable_metta_skill=0
     egress_extra_domains=""
 
     if [[ "$#" -eq 0 ]]; then
@@ -782,6 +784,10 @@ options() {
                 ;;
             --allow-unrestricted-network)
                 allow_unrestricted_network=1
+                shift
+                ;;
+            --enable-metta-skill)
+                enable_metta_skill=1
                 shift
                 ;;
             --egress-allow)
@@ -1234,6 +1240,10 @@ if sys.argv[1]:
     if [ "${provider}" = "Test" ]; then
         # The mock LLM used by the autotests listens on the test host.
         docker_cmd+=("egressExtraPorts=9765")
+    fi
+    if [ "${enable_metta_skill}" = "1" ]; then
+        echo "WARNING: --enable-metta-skill: the agent can evaluate arbitrary MeTTa and Python." >&2
+        docker_cmd+=("enableMettaSkill=True")
     fi
     if [ "${allow_unrestricted_network}" = "1" ]; then
         echo "WARNING: --allow-unrestricted-network: the agent can open TCP connections to any host." >&2

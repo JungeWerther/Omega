@@ -9,6 +9,9 @@
 
 ## The `metta` skill
 
+> The `metta` skill is off by default because it can run arbitrary code.
+> Start Omega with `enableMettaSkill=True` to follow this tutorial.
+
 ```metta
 (metta sexpression)
 ```

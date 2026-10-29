@@ -79,6 +79,7 @@
                                (initLoop)
                                (initLogger)
                                (applySecurityPolicy)
+                               (initOptionalSkills)
                                (initMemory)
                                (initKnowledge)
                                (initPlugins)
@@ -120,11 +121,17 @@
                                                          (let ($callid $s) (superpose $resp)
                                                            (let $result
                                                              (if (HandleError (quote $s) $error) $error
-                                                               (let $rc (catch (let $R (collapse (eval $s)) (py-call (helper.normalize_string $R))))
-                                                                 (if (HandleError $rc $error) $error (strings-concat ("SUCCESS, RETURN: " $rc)))))
+                                                               ; The injection guard (src/guard.py) may hold the call
+                                                               ; for the owner's approval instead of running it.
+                                                               (let $verdict (py-call (guard.decide (repr (quote $s))))
+                                                                 (if (== $verdict True)
+                                                                   (let $rc (catch (let $R (collapse (eval $s)) (py-call (helper.normalize_string $R))))
+                                                                     (if (HandleError $rc $error) $error (strings-concat ("SUCCESS, RETURN: " $rc))))
+                                                                   $verdict)))
                                                              (progn
                                                                ($_ (log INFO "loop" (COMMAND_RETURN: ((quote $s) $result))))
-                                                               (messagesAppend (llmToolCallResponseMessage role "tool" callid $callid content (last_chars $result (maxFeedback))))
+                                                               ; Output from outside is labelled untrusted and taints the turn.
+                                                               (messagesAppend (llmToolCallResponseMessage role "tool" callid $callid content (py-call (guard.present (repr (quote $s)) (last_chars $result (maxFeedback))))))
                                                                (quote $s)))))))))
                                            (if (or $msgnew  (not (== $sexpr ()))) (addToHistory $msg $sexpr $msgnew) _))
                                 (if (> (get_time) (get-state &nextWakeAt))

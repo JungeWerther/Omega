@@ -2,6 +2,7 @@ import config
 import logging
 from typing import List
 import json
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -330,8 +331,19 @@ def llmToolCallGetError(call: LLMToolCall):
 
 ESCAPE = str.maketrans({ '"': '\\"', '\\': '\\\\' })
 
+# A call id is pasted into the s-expression as a bare atom, so it must not
+# contain anything the parser treats specially.
+_SAFE_CALL_ID = re.compile(r'^[^\s()";\\]{1,128}$')
+
+
 def llmToolCallToSExpr(call: LLMToolCall):
-    sexpr = f"({call.name} "
+    # The result is parsed and evaluated by the agent loop. A validated call
+    # names a registered skill; an invalid one may name anything the model
+    # produced, so its name is written as an escaped string, not a symbol.
+    if call.is_error():
+        sexpr = f"(\"{str(call.name).translate(ESCAPE)}\" "
+    else:
+        sexpr = f"({call.name} "
     if not call.is_error():
         for parameter in call.tool.parameters:
             if parameter.name in call.arguments:
@@ -353,6 +365,9 @@ def llmToolCallToSExpr(call: LLMToolCall):
 def llmResponseToSExpr(response: LLMResponse) -> str:
     if response.is_error():
         return f"(Error () \"{str(response.error).translate(ESCAPE)}\")"
+    bad_ids = [call.id for call in response.calls if not _SAFE_CALL_ID.match(str(call.id))]
+    if bad_ids:
+        return f"(Error () \"{f'Malformed tool call id: {bad_ids[0]!r}'.translate(ESCAPE)}\")"
     else:
         sexpr = "("
         for call in response.calls:
