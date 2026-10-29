@@ -94,25 +94,22 @@ def _slack_api_call(bot_token, method, params=None, timeout=20):
 def _choose_channel():
     while True:
         print("Please select your communication channel.")
-        print("1) IRC (QuakeNet) 2) Telegram Bot 3) Slack Bot 4) WebSocket Chat")
+        print("1) IRC (Libera.Chat) 2) Telegram Bot 3) Slack Bot 4) WebSocket Chat")
         c = input("Enter 1-4 or 'q' to exit (default: 1): ").strip()
 
         if c.lower() == "q":
             sys.exit(1)
 
         if c in ("", "1"):
-            while True:
-                print("Please enter your unique IRC channel. Example: ##MyOmega54323")
-                channel = input("Enter IRC channel or 'q' to exit: ").strip()
-                if channel.lower() == "q":
-                    sys.exit(1)
-                if not channel:
-                    print("IRC channel is required.", file=sys.stderr)
-                    continue
-                return {
-                    "commchannel": "irc",
-                    "IRC_channel": channel,
-                }
+            print("By default Omega talks to you in private messages only.")
+            print("Optionally enter a channel to also use (everyone in it can read replies).")
+            channel = input("IRC channel (Enter for none) or 'q' to exit: ").strip()
+            if channel.lower() == "q":
+                sys.exit(1)
+            return {
+                "commchannel": "irc",
+                "IRC_channel": channel,
+            }
 
         if c == "2":
             while True:
@@ -401,15 +398,16 @@ cat <<EOF
  HOW TO INTERACT WITH OMEGA IRC
 ============================================
 
-Please go to https://webchat.quakenet.org/ or any IRC client.
-Then, enter a unique username and this channel:
-  $IRC_channel
-
-Authentication step (required):
-  Once in the $IRC_channel channel, send this one-time secret exactly once:
-  auth ${OMEGA_AUTH_SECRET}
-  The first nickname that sends it becomes the only accepted user.
-  Messages from all other users will be silently ignored.
+1. Connect to irc.libera.chat with TLS (port 6697), for example from
+   https://web.libera.chat/ or any IRC client.
+2. Register or identify your nickname with NickServ. Omega binds its owner
+   to that services account, not to a nickname.
+3. Send the secret in a PRIVATE message, never in a channel:
+     /msg ${IRC_user} auth ${OMEGA_AUTH_SECRET}
+   The first account that sends it becomes the only accepted user.
+${IRC_channel:+
+Omega also joins ${IRC_channel}. Everyone in that channel can read its
+replies to you there; private messages stay private.}
 
 EOF
 elif [ "${commchannel}" = "telegram" ]; then
@@ -705,7 +703,10 @@ options() {
     provider=ASICloud
     image=singularitynet/omega:latest
     commchannel=irc
-    IRC_channel="${IRC_channel:-##omega}"
+    # No shared default channel: without -c the agent talks to its owner in
+    # private messages only.
+    IRC_channel="${IRC_channel:-}"
+    IRC_user="${IRC_user:-omega$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
     TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
     TG_POLL_TIMEOUT="${TG_POLL_TIMEOUT:-20}"
     SL_BOT_TOKEN="${SL_BOT_TOKEN:-}"
@@ -1105,6 +1106,9 @@ path.unlink()
 
 start() {
     ensure_auth_secret
+    if [ "${commchannel}" = "irc" ]; then
+        echo "IRC: identify with NickServ on irc.libera.chat, then send privately: /msg ${IRC_user} auth <secret>"
+    fi
     container_log_config_path=""
     log_config_volume=()
     memory_transfer_volume=()
@@ -1204,7 +1208,10 @@ if sys.argv[1]:
     fi
 
     if [ "${commchannel}" = "irc" ]; then
-      docker_cmd+=("IRC_channel=${IRC_channel}")
+      docker_cmd+=("IRC_user=${IRC_user}")
+      if [ -n "${IRC_channel}" ]; then
+        docker_cmd+=("IRC_channel=${IRC_channel}")
+      fi
     elif [ "${commchannel}" = "telegram" ]; then
       docker_cmd+=("TG_POLL_TIMEOUT=${TG_POLL_TIMEOUT}")
     elif [ "${commchannel}" = "slack" ]; then

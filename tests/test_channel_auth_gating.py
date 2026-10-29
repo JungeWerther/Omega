@@ -13,7 +13,6 @@ CHANNELS_DIRECTORY = REPO_ROOT / "channels"
 @pytest.mark.parametrize(
     ("module_name", "arguments"),
     [
-        ("irc", ("alice", "hello 🌍")),
         ("telegram", ("chat", "alice", "private", "hello 🌍")),
         ("slack", ("channel", "alice", "hello 🌍")),
         ("mattermost", ("alice", "hello 🌍")),

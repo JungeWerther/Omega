@@ -71,3 +71,12 @@ Without the entrypoint there is no separate user, so the gate's isolation does
 not apply: channel plugins run in the agent process and records go to
 `authStateDir` (default `memory/.channel`). Authentication still fails closed
 and is still rate limited, but a compromised agent can edit the records.
+
+## IRC specifics
+
+IRC identities are weaker than Telegram or Slack user IDs, so the IRC adapter
+adds its own rules (see [channels](reference-channels.md#channelsircpy)):
+TLS with certificate verification, `auth` accepted only as a private message,
+and the owner bound to a services account (`account-tag`) instead of a
+nickname. Records written under the old `IRC` identifier (bare nicknames) are
+not trusted; the owner authenticates once again after upgrading.

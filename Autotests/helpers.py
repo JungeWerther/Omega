@@ -4,16 +4,20 @@ import inspect
 import os
 import re
 import socket
+import ssl
 import subprocess
 import threading
 import time
 
 import pytest
 
-CHANNEL = os.environ.get("OMEGA_IRC_CHANNEL") or "#metaclaw777"
 CONTAINER = os.environ.get("OMEGA_CONTAINER") or "omega"
-IRC_SERVER = "irc.quakenet.org"
-IRC_PORT = 6667
+IRC_SERVER = os.environ.get("OMEGA_IRC_SERVER") or "irc.libera.chat"
+IRC_PORT = int(os.environ.get("OMEGA_IRC_PORT") or 6697)
+IRC_TLS = os.environ.get("OMEGA_IRC_TLS", "1") != "0"
+# The agent accepts `auth` and prompts only as private messages to its nick.
+BOT_NICK = os.environ.get("OMEGA_IRC_BOT", "")
+AUTH_SECRET = os.environ.get("OMEGA_AUTH_SECRET", "")
 WAIT = 30
 POLL = 3
 
@@ -61,8 +65,9 @@ def dexec_root(*args):
 IRC_RETRIES = 3
 IRC_RETRY_DELAY = 10
 
-# Stable nick for the whole pytest session. The agent's IRC channel binds
-# `auth 0000` to the FIRST nick that presents the secret; any subsequent nick
+# Stable nick for the whole pytest session. The agent binds `auth <secret>`
+# to the FIRST identity (ident@host with IRC_requireAccount=False) that
+# presents the secret; any subsequent identity
 # sending the same secret is rejected ("ignore"), so per-test nicks would
 # silently fail IRC delivery for every test after the first. Generating once
 # at import time guarantees all tests share a single authenticated identity.
@@ -110,10 +115,15 @@ def _reader_loop(sock):
 
 
 def _open_session():
-    """Connect, register, JOIN channel, send `auth 0000`. Must be called with
-    _irc_lock held. Returns the live socket or None on failure."""
+    """Connect, register and send `auth <secret>` privately to the agent.
+    Must be called with _irc_lock held. Returns the live socket or None on
+    failure."""
+    if not BOT_NICK or not AUTH_SECRET:
+        pytest.exit("Set OMEGA_IRC_BOT and OMEGA_AUTH_SECRET (see README_live.md)", returncode=2)
     nick = SESSION_NICK
     sock = socket.create_connection((IRC_SERVER, IRC_PORT), timeout=30)
+    if IRC_TLS:
+        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=IRC_SERVER)
     sock.settimeout(30)
     sock.sendall(f"NICK {nick}\r\nUSER {nick} 0 * :{nick}\r\n".encode())
 
@@ -136,10 +146,7 @@ def _open_session():
                 token = line.split(" ", 1)[1] if " " in line else ":?"
                 sock.sendall(f"PONG {token}\r\n".encode())
             elif " 001 " in line:
-                sock.sendall(f"JOIN {CHANNEL}\r\n".encode())
-            elif " 366 " in line:
-                # End of NAMES list — we're in the channel.
-                sock.sendall(f"PRIVMSG {CHANNEL} :auth 0000\r\n".encode())
+                sock.sendall(f"PRIVMSG {BOT_NICK} :auth {AUTH_SECRET}\r\n".encode())
                 joined = True
                 break
     if not joined:
@@ -196,7 +203,7 @@ def send_prompt(prompt):
                     pass
             else:
                 try:
-                    _irc_sock.sendall(f"PRIVMSG {CHANNEL} :{prompt}\r\n".encode())
+                    _irc_sock.sendall(f"PRIVMSG {BOT_NICK} :{prompt}\r\n".encode())
                     return True
                 except (ConnectionResetError, ConnectionRefusedError,
                         socket.timeout, BrokenPipeError, OSError) as e:

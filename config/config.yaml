@@ -61,13 +61,22 @@ commchannel: irc
 
 # IRC
 # Enabled with commchannel: irc
-# IRC channel to join 
-IRC_channel: "##omega"
-# IRC server hostname
-IRC_server: "irc.quakenet.org"
-# IRC port
-IRC_port: 6667
-# IRC nickname
+# IRC channel to also join. Empty: talk to the owner in private messages only.
+# Everyone in a channel can read the agent's replies there.
+IRC_channel: ""
+# IRC server hostname. Needs services accounts (account-tag) unless
+# IRC_requireAccount is false.
+IRC_server: "irc.libera.chat"
+# IRC port (6697 is TLS)
+IRC_port: 6697
+# Connect with TLS and verify the server certificate
+IRC_tls: true
+# Plain TCP sends the secret and every message in clear text; refused unless true
+IRC_allowPlaintext: false
+# Bind the owner to a services account (true) or, for networks without
+# account tags such as QuakeNet, to ident@host (false)
+IRC_requireAccount: true
+# IRC nickname; the launcher picks a random one per install
 IRC_user: "omega"
 
 # Mattermost

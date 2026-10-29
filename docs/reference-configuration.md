@@ -51,10 +51,13 @@ Local model loading still happens before indexing and can delay cold startup.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `commchannel` | `irc` | Active channel — `irc`, `telegram`, `slack`, `mattermost`, or `websocket`. |
-| `IRC_channel` | `##omega` | IRC channel to join. |
-| `IRC_server` | `irc.quakenet.org` | IRC server hostname. |
-| `IRC_port` | 6667 | IRC port. |
-| `IRC_user` | `omega` | IRC nickname. |
+| `IRC_channel` | *(empty)* | Optional channel to also join. Empty means private messages with the owner only. Everyone in a channel can read the agent's replies there. |
+| `IRC_server` | `irc.libera.chat` | IRC server hostname. |
+| `IRC_port` | 6697 | IRC port (6697 TLS, 6667 plain). |
+| `IRC_tls` | `true` | Connect with TLS and verify the server certificate. |
+| `IRC_allowPlaintext` | `false` | Must be `true` to run with `IRC_tls: false`. The secret and every message then travel in clear text. |
+| `IRC_requireAccount` | `true` | Bind the owner to a services account via IRCv3 `account-tag`. Set `false` on networks without it (QuakeNet) to bind to `ident@host` instead. |
+| `IRC_user` | `omega` | IRC nickname. The launcher picks `omega` plus six random hex digits. If the nick is taken, digits are appended and logged. |
 | `TG_CHAT_ID` | *(empty)* | Legacy single-chat bootstrap/fallback, primarily for authentication-disabled deployments. With authentication enabled, the authenticated owner's DM becomes the proactive-message default. |
 | `TG_ALLOWED_CHAT_IDS` | *(empty)* | Optional comma-separated initial allowed-chat set. The authenticated owner can add groups with `/bind` and remove them with `/unbind`; those changes are persisted in `authStateDir/authenticated-group.json` (the gate volume in Docker), not written back to YAML. |
 | `TG_POLL_TIMEOUT` | 20 | Telegram long-poll timeout in seconds. |
