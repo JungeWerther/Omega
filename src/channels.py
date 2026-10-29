@@ -1,13 +1,16 @@
 import hashlib
+import json
 import logging
+import urllib.request
 
 logger = logging.getLogger(__name__)
 
 _commChannelRegistry = {}
 
 
-def _authenticated_export_principal() -> str | None:
-    if _commchannel_id == "websocket":
+def local_export_principal(commchannel_id: str) -> str | None:
+    """Principal allowed to export memory, computed where the channel runs."""
+    if commchannel_id == "websocket":
         from config import config_get_by_key
 
         token = str(config_get_by_key("WS_TOKEN", "")).strip()
@@ -20,7 +23,14 @@ def _authenticated_export_principal() -> str | None:
 
     if not is_auth_enabled():
         return None
-    return get_channel_authenticated_user_id(_commchannel_id.upper())
+    return get_channel_authenticated_user_id(commchannel_id.upper())
+
+
+def _authenticated_export_principal() -> str | None:
+    principal = getattr(_commchannel, "principal", None)
+    if callable(principal):
+        return principal()
+    return local_export_principal(_commchannel_id)
 
 
 def handle_control_message(message: str) -> bool:
@@ -81,10 +91,70 @@ def registerCommChannel(id: str, channel: CommChannel) -> None:
 _commchannel: CommChannel = None
 _commchannel_id = ""
 
+class GateChannel(CommChannel):
+    """Agent-side client of the gate process (see gate/).
+
+    In Docker the real channel plugin runs in the gate under its own user,
+    which authenticates senders and keeps the owner records out of the
+    agent's reach. The agent only receives messages that passed that check
+    and can only send through the gate. Every failure is treated as "no
+    message", never as permission.
+    """
+
+    TIMEOUT_SECONDS = 10
+
+    def __init__(self, url: str):
+        self._url = url.rstrip("/")
+
+    def _call(self, method: str, path: str, payload: dict | None = None) -> dict:
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._url}{path}",
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=self.TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def start(self) -> None:
+        self._call("GET", "/v1/health")
+
+    def receive(self) -> str:
+        try:
+            return str(self._call("GET", "/v1/receive").get("message") or "")
+        except Exception as exc:
+            logger.warning(f"Gate receive failed, treating as no message: {exc}")
+            return ""
+
+    def send(self, message: str) -> None:
+        self._call("POST", "/v1/send", {"message": str(message)})
+
+    def principal(self) -> str | None:
+        try:
+            return self._call("GET", "/v1/principal").get("principal")
+        except Exception as exc:
+            logger.warning(f"Gate principal lookup failed, denying export: {exc}")
+            return None
+
+
+def _gate_url() -> str:
+    from config import config_get_by_key
+
+    return str(config_get_by_key("GATE_URL", "") or "").strip()
+
+
 def commChannelStart(commchannel):
     """Select and start one of the communication channels registered by
-    plugins"""
+    plugins, or the gate client when GATE_URL is configured"""
     global _commchannel, _commchannel_id
+    gate_url = _gate_url()
+    if gate_url:
+        logger.info(f"commChannelStart: using gate at {gate_url} for channel {commchannel}")
+        _commchannel = GateChannel(gate_url)
+        _commchannel_id = str(commchannel).lower()
+        _commchannel.start()
+        return
     _commchannel = _commChannelRegistry.get(commchannel, None)
     if _commchannel is None:
         error = f"commChannelStart: Communication channel plugin {commchannel} is not registered"
@@ -92,6 +162,12 @@ def commChannelStart(commchannel):
         raise RuntimeError(error)
     _commchannel_id = str(commchannel).lower()
     _commchannel.start()
+
+def commChannelReceiveRaw():
+    """Receive from the selected channel without control-message handling.
+    Used by the gate, which leaves control messages to the agent."""
+    return _commchannel.receive()
+
 
 def commChannelReceive():
     """Receive message from selected communication channel"""

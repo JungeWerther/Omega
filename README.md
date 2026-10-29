@@ -141,6 +141,7 @@ Run the system via the following command which ensures the system is started fro
 ```
 OMEGA_AUTH_SECRET=<channel-secret> sh run.sh run.metta IRC_channel="<irc-channel>"
 ```
+Use a long random `<channel-secret>` (for example `python3 -c 'import secrets; print(secrets.token_urlsafe(18))'`). Without one, nobody can authenticate. Outside Docker the agent can edit its own auth records; see [channel authentication](docs/reference-channel-auth.md).
 After start go to https://webchat.quakenet.org/ to communicate with the agent. Join `<irc-channel>` and after agent is joined send `auth <channel-secret>` message to authenticate yourself as an agent owner. Please replace `<irc-channel>` and `<channel-secret>` by your own values.
 
 ### Import Knowledge

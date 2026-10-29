@@ -1,23 +1,52 @@
+"""Channel owner and group authorization.
+
+The owner secret and the persisted owner/group records are trust anchors, so
+everything here fails closed:
+
+* The secret is only ever read from this process's environment. In Docker
+  this module runs inside the gate process (see gate/), which is the only
+  process holding OMEGA_AUTH_SECRET; the agent never sees it.
+* Missing secret means "nobody can authenticate", not "everybody is allowed".
+  Running without authentication needs an explicit allowUnauthenticated=True.
+* Repeated wrong secrets lock the sender out (see guards.throttle_failures).
+* Records live in authStateDir. In Docker that is a volume owned by the gate
+  user, outside every path the agent can write.
+"""
+
 import hmac
 import json
 import os
 import time
-import urllib.request
 from pathlib import Path
+import sys
 from config import config_get_by_key
 
+try:
+    from guards import fail_closed, throttle_failures
+except ModuleNotFoundError:  # loaded by file path, e.g. from tests
+    sys.path.append(str(Path(__file__).resolve().parent))
+    from guards import fail_closed, throttle_failures
 from src.logger import get_logger
 
 logger = get_logger(__name__)
 
 _proxy_url = None
-_auth_enabled = None
 _CHANNEL_DIR_NAME = ".channel"
 _CHANNEL_AUTH_USER_FILE = "authenticated-user.json"
 _CHANNEL_AUTH_GROUP_FILE = "authenticated-group.json"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MEMORY_DIRECTORY = str(_REPO_ROOT / "memory")
 _user_ID_processed = False
+_unauthenticated_warning_logged = False
+
+# A 6-digit secret has 10^6 values; at 5 guesses per sender per 15 minutes
+# and 20 guesses in total per 15 minutes, exhausting it takes about 1.4 years.
+SECRET_ATTEMPTS_PER_SENDER = 5
+SECRET_ATTEMPTS_TOTAL = 20
+SECRET_ATTEMPT_WINDOW_SECONDS = 15 * 60
+WEAK_SECRET_LENGTH = 16
+
+_TRUTHY = {"1", "true", "yes", "on"}
 
 
 def get_proxy_url():
@@ -32,46 +61,75 @@ def _local_auth_secret():
     return os.environ.get("OMEGA_AUTH_SECRET", "").strip()
 
 
+def _allow_unauthenticated():
+    value = config_get_by_key("allowUnauthenticated", False)
+    return value is True or str(value).strip().lower() in _TRUTHY
+
+
 def is_auth_enabled():
-    global _auth_enabled
-    if _auth_enabled is not None:
-        return _auth_enabled
-    proxy = get_proxy_url()
-    if not proxy:
-        _auth_enabled = bool(_local_auth_secret())
-        return _auth_enabled
-    try:
-        url = f"{proxy}/auth/status"
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            data = json.loads(resp.read())
-            _auth_enabled = data.get("enabled", False)
-    except Exception as e:
-        logger.warning(f"Could not read auth status from proxy, assuming auth is disabled: {e}")
-        _auth_enabled = False
-    return _auth_enabled
+    """Whether channel senders must authenticate.
+
+    Only an explicit allowUnauthenticated=True without a secret turns
+    authentication off. A missing secret otherwise keeps it on, so no one can
+    authenticate and every unbound sender is ignored.
+    """
+    global _unauthenticated_warning_logged
+    if _local_auth_secret():
+        return True
+    if _allow_unauthenticated():
+        return False
+    if not _unauthenticated_warning_logged:
+        logger.error(
+            "OMEGA_AUTH_SECRET is not set: no one can authenticate. Set a secret, "
+            "or pass allowUnauthenticated=True to accept messages from anyone."
+        )
+        _unauthenticated_warning_logged = True
+    return True
+
+
+def is_weak_secret(secret):
+    return len(str(secret or "")) < WEAK_SECRET_LENGTH
 
 
 def verify_token(candidate):
-    proxy = get_proxy_url()
-    if not proxy:
-        secret = _local_auth_secret()
-        return bool(secret) and hmac.compare_digest(
-            str(candidate).encode("utf-8"), secret.encode("utf-8")
-        )
-    url = f"{proxy}/auth/verify"
-    req = urllib.request.Request(url)
-    req.add_header("X-Auth-Token", str(candidate))
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-            return data.get("match", False)
-    except Exception as e:
-        logger.error(f"Token verification request failed, denying: {e}")
-        return False
+    secret = _local_auth_secret()
+    return bool(secret) and hmac.compare_digest(
+        str(candidate).encode("utf-8"), secret.encode("utf-8")
+    )
+
+
+@throttle_failures(
+    limit=SECRET_ATTEMPTS_PER_SENDER,
+    global_limit=SECRET_ATTEMPTS_TOTAL,
+    window=SECRET_ATTEMPT_WINDOW_SECONDS,
+    key=lambda channel_identifier, user_id, candidate: (channel_identifier, user_id),
+)
+@fail_closed(False)
+def _sender_presented_secret(channel_identifier, user_id, candidate):
+    return verify_token(candidate)
+
+
+def auth_state_directory():
+    """Directory holding the owner and group records.
+
+    authStateDir wins when configured (the gate's own volume in Docker);
+    otherwise the legacy memory/.channel location is used.
+    """
+    configured = str(config_get_by_key("authStateDir", "") or "").strip()
+    if configured:
+        return configured
+    return os.path.join(_MEMORY_DIRECTORY, _CHANNEL_DIR_NAME)
+
+
+def _open_private_append(path):
+    """Append to a record file readable by its owner only, refusing symlinks
+    so a planted link cannot redirect the write."""
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    return os.fdopen(fd, "a", encoding="utf-8")
 
 
 def _channel_auth_user_path():
-    return os.path.join(_MEMORY_DIRECTORY, _CHANNEL_DIR_NAME, _CHANNEL_AUTH_USER_FILE)
+    return os.path.join(auth_state_directory(), _CHANNEL_AUTH_USER_FILE)
 
 
 # ---------------------------------------------------------------------------
@@ -97,9 +155,9 @@ def store_channel_authenticated_user_id(channel_identifier, user_id):
         "user_id": user_id,
     }
     path = _channel_auth_user_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     try:
-        with open(path, "a", encoding="utf-8") as f:
+        with _open_private_append(path) as f:
             json.dump(payload, f, separators=(",", ":"))
             f.write("\n")
     except OSError as e:
@@ -134,7 +192,9 @@ def authenticate_channel_user(channel_identifier, user_id, auth_candidate=None):
         return "allow" if saved_user_id == user_id else "ignore"
 
     # The secret can establish an owner only before an owner has been saved.
-    if auth_candidate is not None and verify_token(auth_candidate):
+    if auth_candidate is not None and _sender_presented_secret(
+        channel_identifier, user_id, auth_candidate
+    ):
         label = channel_identifier.upper()
         if store_channel_authenticated_user_id(channel_identifier, user_id):
             logger.info(f"[{label}] Saved authenticated user ID")
@@ -176,11 +236,11 @@ def get_channel_authenticated_user_id(channel_identifier):
 # Owner-managed group authorization.
 
 def _channel_auth_group_path():
-    return os.path.join(_MEMORY_DIRECTORY, _CHANNEL_DIR_NAME, _CHANNEL_AUTH_GROUP_FILE)
+    return os.path.join(auth_state_directory(), _CHANNEL_AUTH_GROUP_FILE)
 
 
 def _append_json_line(path, payload):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     prefix = ""
     try:
         with open(path, "rb") as probe:
@@ -191,7 +251,7 @@ def _append_json_line(path, payload):
                     prefix = "\n"
     except FileNotFoundError:
         pass
-    with open(path, "a", encoding="utf-8") as f:
+    with _open_private_append(path) as f:
         f.write(prefix + json.dumps(payload, separators=(",", ":")) + "\n")
 
 

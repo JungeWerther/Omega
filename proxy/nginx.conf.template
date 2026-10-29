@@ -22,7 +22,9 @@ http {
     proxy_read_timeout    120s;
 
     server {
-        listen 8080;
+        # Loopback only: other containers on the Docker network must not be
+        # able to borrow the provider credentials injected below.
+        listen 127.0.0.1:8080;
 
         # Uses Anthropic's OpenAI-compatible endpoint (/v1/chat/completions),
         # which accepts Bearer auth like OpenAI. The native /v1/messages API
@@ -111,11 +113,17 @@ http {
             proxy_send_timeout 600s;
         }
 
+        # Channel routes are reachable only under /gate/<key>/, where the key
+        # is a random value held by the gate process and nginx, never by the
+        # agent. Otherwise the agent could read or post as the bot directly,
+        # bypassing the gate's sender authentication and target checks.
+
         # Telegram: rewrite URL to inject bot token in path.
-        # Agent calls /telegram/getUpdates → proxy rewrites to
+        # The gate calls /gate/<key>/telegram/getUpdates → proxy rewrites to
         # /bot<TOKEN>/getUpdates and forwards to Telegram.
-        location /telegram/ {
-            rewrite ^/telegram/(.*)$ /bot${TG_BOT_TOKEN}/$1 break;
+        location /gate/${OMEGA_GATE_KEY}/telegram/ {
+            access_log off;
+            rewrite ^/gate/${OMEGA_GATE_KEY}/telegram/(.*)$ /bot${TG_BOT_TOKEN}/$1 break;
             proxy_pass https://api.telegram.org;
             proxy_set_header Host api.telegram.org;
             proxy_ssl_server_name on;
@@ -125,8 +133,9 @@ http {
 
         # Telegram file downloads: Telegram serves uploaded files from
         # /file/bot<TOKEN>/<path>, not /bot<TOKEN>/<path>, so media needs its own.
-        location /telegram-file/ {
-            rewrite ^/telegram-file/(.*)$ /file/bot${TG_BOT_TOKEN}/$1 break;
+        location /gate/${OMEGA_GATE_KEY}/telegram-file/ {
+            access_log off;
+            rewrite ^/gate/${OMEGA_GATE_KEY}/telegram-file/(.*)$ /file/bot${TG_BOT_TOKEN}/$1 break;
             proxy_pass https://api.telegram.org;
             proxy_set_header Host api.telegram.org;
             proxy_ssl_server_name on;
@@ -139,7 +148,8 @@ http {
         # Origin is rewritten to the upstream URL so Mattermost's CORS check
         # on the WebSocket upgrade matches its SiteURL / AllowCorsFrom — the
         # agent's auto-derived Origin (http://gateway:8080) is not trusted.
-        location /mattermost/ {
+        location /gate/${OMEGA_GATE_KEY}/mattermost/ {
+            access_log off;
             proxy_pass ${MM_URL};
             proxy_set_header Authorization "Bearer ${MM_BOT_TOKEN}";
             proxy_set_header Host $proxy_host;
@@ -153,7 +163,8 @@ http {
             proxy_read_timeout 300s;
         }
 
-        location /slack/ {
+        location /gate/${OMEGA_GATE_KEY}/slack/ {
+            access_log off;
             proxy_pass https://slack.com/;
             proxy_set_header Authorization "Bearer ${SL_BOT_TOKEN}";
             proxy_set_header Host slack.com;
@@ -163,7 +174,8 @@ http {
         }
 
         # Slack private file downloads.
-        location /slack-files/ {
+        location /gate/${OMEGA_GATE_KEY}/slack-files/ {
+            access_log off;
             proxy_pass https://files.slack.com/;
 
             proxy_set_header Authorization "Bearer ${SL_BOT_TOKEN}";
@@ -172,29 +184,6 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_protocols TLSv1.2 TLSv1.3;
             proxy_http_version 1.1;
-        }
-
-        # Auth secret verification — agent sends candidate token, proxy compares.
-        # After envsubst, ${OMEGA_AUTH_SECRET} becomes the literal secret.
-        set $auth_secret_value "${OMEGA_AUTH_SECRET}";
-
-        location = /auth/status {
-            default_type application/json;
-            if ($auth_secret_value = "") {
-                return 200 '{"enabled":false}';
-            }
-            return 200 '{"enabled":true}';
-        }
-
-        location = /auth/verify {
-            default_type application/json;
-            if ($auth_secret_value = "") {
-                return 200 '{"match":true}';
-            }
-            if ($http_x_auth_token = "${OMEGA_AUTH_SECRET}") {
-                return 200 '{"match":true}';
-            }
-            return 200 '{"match":false}';
         }
 
         location /health {

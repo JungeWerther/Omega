@@ -56,19 +56,21 @@ Local model loading still happens before indexing and can delay cold startup.
 | `IRC_port` | 6667 | IRC port. |
 | `IRC_user` | `omega` | IRC nickname. |
 | `TG_CHAT_ID` | *(empty)* | Legacy single-chat bootstrap/fallback, primarily for authentication-disabled deployments. With authentication enabled, the authenticated owner's DM becomes the proactive-message default. |
-| `TG_ALLOWED_CHAT_IDS` | *(empty)* | Optional comma-separated initial allowed-chat set. The authenticated owner can add groups with `/bind` and remove them with `/unbind`; those changes are persisted in `memory/.channel/authenticated-group.json`, not written back to YAML. |
+| `TG_ALLOWED_CHAT_IDS` | *(empty)* | Optional comma-separated initial allowed-chat set. The authenticated owner can add groups with `/bind` and remove them with `/unbind`; those changes are persisted in `authStateDir/authenticated-group.json` (the gate volume in Docker), not written back to YAML. |
 | `TG_POLL_TIMEOUT` | 20 | Telegram long-poll timeout in seconds. |
 | `SL_CHANNEL_ID` | *(empty — auto-bind supported)* | Optional Slack channel ID where Omega reads/writes messages. Leave empty to auto-bind on first valid inbound auth/message. |
 | `SL_POLL_INTERVAL` | 60 | Slack poll interval in seconds (minimum effective value is 60). |
 | `MM_URL` | `https://chat.singularitynet.io` | Mattermost base URL. |
 | `MM_CHANNEL_ID` | `8fjrmabjx7gupy7e5kjznpt5qh` | Target channel ID. |
 | `WS_URL` | *(empty — set at runtime)* | WebSocket endpoint URL (`ws://` or `wss://`). Required when `commchannel=websocket`. |
-| `WS_TOKEN` | *(empty — optional)* | Bearer token sent as `Authorization: Bearer <token>`. Leave empty for an unauthenticated endpoint. |
+| `WS_TOKEN` | *(empty — optional)* | Bearer token sent as `Authorization: Bearer <token>`. Leave empty for an unauthenticated endpoint. In Docker pass it as the `OMEGA_WS_TOKEN` environment variable, not as an argument, so it stays out of the process list. |
+| `authStateDir` | `memory/.channel` | Directory holding the channel owner and group records. The Docker entrypoint sets it to `/var/lib/omega-gate`, which only the gate user can write. |
+| `allowUnauthenticated` | `False` | Without `OMEGA_AUTH_SECRET`, nobody can authenticate. Set to `True` to accept messages from anyone instead. |
 
 | Environment variable | Meaning |
 |---|---|
 | `TG_BOT_TOKEN` | Telegram bot token (from BotFather). |
-| `OMEGA_AUTH_SECRET` | Enables the one-time owner-authentication handshake when non-empty. The owner sends `auth <secret>` in a private Telegram DM. |
+| `OMEGA_AUTH_SECRET` | Owner secret. The first sender of `auth <secret>` becomes the owner; wrong guesses are rate limited. Without it nobody can authenticate unless `allowUnauthenticated=True`. See [channel authentication](reference-channel-auth.md). |
 | `MM_BOT_TOKEN` | Bot auth token. |
 | `SL_BOT_TOKEN` | Slack bot token (`xoxb-...`). |
 

@@ -118,6 +118,12 @@ COPY --from=builder /PeTTa /PeTTa
 COPY --from=builder /opt/huggingface /opt/huggingface
 COPY --from=builder /opt/sentence_transformers /opt/sentence_transformers
 
+# Gate user: runs the communication channel and owns the channel auth
+# records (see gate/main.py). Its state directory is a separate volume that
+# the agent user cannot write.
+RUN useradd --system --user-group --no-create-home --shell /usr/sbin/nologin omegagate \
+ && install -d -o omegagate -g omegagate -m 0700 /var/lib/omega-gate
+
 # setup nginx proxy
 RUN usermod -a -G tty www-data
 RUN mkdir /opt/nginx

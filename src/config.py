@@ -61,10 +61,17 @@ def config_get_by_key(key, default=None):
         return _cache_config(key, _CONFIG_FILE.get(key), "config file")
     return _cache_config(key, default, "defaults")
 
+_SECRET_KEY = re.compile(r"(TOKEN|SECRET|PASSWORD|API_KEY|_KEY$)", re.IGNORECASE)
+
+
+def _loggable(key, value):
+    return "***" if value and _SECRET_KEY.search(str(key)) else value
+
+
 def _cache_config(key, value, source):
     global _CONFIG
     _CONFIG[key] = value
-    logger.info(f"Configuration item resolved using {source}: {key}={value}")
+    logger.info(f"Configuration item resolved using {source}: {key}={_loggable(key, value)}")
     return value
 
 def _command_line_value(value):
