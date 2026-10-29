@@ -37,5 +37,14 @@ filesystem_policy:
   - /dev/nvidia-uvm
   - /dev/nvidia-uvm-tools
   - /dev/nvidia-modeset
+network_policy:
+  # The only TCP ports the agent may connect to (all on 127.0.0.1): nginx
+  # (LLM providers), the gate (chat) and the egress proxy (allowlisted
+  # HTTPS). Binding TCP ports is denied. Needs Landlock ABI 4 (Linux 6.7+);
+  # without it the agent refuses to start unless allowUnrestrictedNetwork.
+  connect_tcp:
+  - 8080
+  - 8090
+  - 3128
 landlock:
   compatibility: best_effort

@@ -103,7 +103,7 @@ jobs:
       - name: Autotests - Set up
         run: |
           chmod +x ./scripts/omega
-          ./scripts/omega start -p Test -t test -d singularitynet/omega:${{ env.AUTOTESTS_OMEGA_TAG }} -g "http://host.docker.internal:18789"
+          ./scripts/omega start -p Test -t test -d singularitynet/omega:${{ env.AUTOTESTS_OMEGA_TAG }} -g "http://host.docker.internal:18789" --egress-allow github.com
           pip install pytest -r requirements-test.txt
           echo "Waiting for agent to become ready..."
           ready=

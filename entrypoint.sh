@@ -140,6 +140,54 @@ if [ -z "${gate_ready:-}" ]; then
   exit 1
 fi
 
+# --- Egress proxy ------------------------------------------------------------
+# The agent's Landlock policy only allows TCP connections to 8080 (nginx),
+# 8090 (gate) and this proxy, which opens HTTPS tunnels to allowlisted
+# public hosts only (egress/proxy.py). It holds no secrets and gets a clean
+# environment built with builtins, like the gate.
+EGRESS_USER=omegaegress
+EGRESS_PORT=3128
+run_egress() {
+  local name omega_dir="${OMEGA_DIR}"
+  for name in $(compgen -e); do
+    case "${name}" in
+      LANG) ;;
+      *) unset "${name}" 2>/dev/null || true ;;
+    esac
+  done
+  export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  export HOME=/nonexistent LANG="${LANG:-C.UTF-8}" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+  export OMEGA_egressPort="${EGRESS_PORT}"
+  cd "${omega_dir}"
+  while :; do
+    setpriv --reuid="${EGRESS_USER}" --regid="${EGRESS_USER}" --init-groups --no-new-privs \
+      python3 -I "${omega_dir}/egress/proxy.py" "$@" \
+      || echo "egress proxy exited with status $?, restarting" >&2
+    sleep 1
+  done
+}
+( run_egress "$@" ) &
+
+for _ in $(seq 1 60); do
+  if (exec 3<>"/dev/tcp/127.0.0.1/${EGRESS_PORT}") 2>/dev/null; then
+    egress_ready=1
+    break
+  fi
+  sleep 0.5
+done
+if [ -z "${egress_ready:-}" ]; then
+  echo "egress proxy did not start; refusing to start the agent without it" >&2
+  exit 1
+fi
+
+# Every HTTP client the agent uses (openai, requests, urllib, ddgs, git,
+# curl, pip) goes through the egress proxy, except the local services.
+EGRESS_PROXY_URL="http://127.0.0.1:${EGRESS_PORT}"
+export HTTP_PROXY="${EGRESS_PROXY_URL}" HTTPS_PROXY="${EGRESS_PROXY_URL}"
+export http_proxy="${EGRESS_PROXY_URL}" https_proxy="${EGRESS_PROXY_URL}"
+export DDGS_PROXY="${EGRESS_PROXY_URL}"
+export NO_PROXY="127.0.0.1,localhost,::1" no_proxy="127.0.0.1,localhost,::1"
+
 # Optional knowledge-base import
 if [[ "${IMPORT_KB_ON_START}" == "1" ]]; then
   su nobody -s /bin/sh -c "${OMEGA_DIR}/scripts/import_knowledge.sh"
@@ -188,7 +236,8 @@ unset MEMORY_PORTABILITY_OPERATION MEMORY_PORTABILITY_PYTHON PYTHONPATH
 SAFE_VARS="HOME USER PATH HOSTNAME TERM LANG LC_ALL \
   PYTHONDONTWRITEBYTECODE PYTHONUNBUFFERED \
   HF_HOME SENTENCE_TRANSFORMERS_HOME HF_HUB_OFFLINE TRANSFORMERS_OFFLINE \
-  CHROMA_DB_PATH EMBEDDING_PROVIDER OMEGA_DIR MEMORY_DIR TEST_SERVER_IP"
+  CHROMA_DB_PATH EMBEDDING_PROVIDER OMEGA_DIR MEMORY_DIR TEST_SERVER_IP \
+  HTTP_PROXY HTTPS_PROXY http_proxy https_proxy DDGS_PROXY NO_PROXY no_proxy"
 
 env_args=""
 for var in $SAFE_VARS; do

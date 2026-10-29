@@ -63,3 +63,24 @@ def test_gate_supervisor_starts_the_gate_with_only_its_secrets(tmp_path):
     # No secret is ever passed as an argument.
     args = next(line for line in record.splitlines() if line.startswith("ARGS"))
     assert "owner-secret" not in args and "ws-token" not in args and "f" * 48 not in args
+
+
+def test_egress_supervisor_gets_no_secrets(tmp_path):
+    omega_dir = tmp_path / "Omega"
+    omega_dir.mkdir()
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "OMEGA_DIR": str(omega_dir),
+        "OMEGA_AUTH_SECRET": "owner-secret",
+        "OMEGA_GATE_KEY": "f" * 48,
+        "ANTHROPIC_API_KEY": "provider-key",
+    }
+
+    result, record = run_supervisor("run_egress", tmp_path, environment, "EGRESS_USER=omegaegress\nEGRESS_PORT=3128")
+
+    assert result.returncode == 0, result.stderr
+    assert f"python3 -I {omega_dir}/egress/proxy.py commchannel=websocket" in record
+    assert f"PWD {omega_dir}" in record
+    assert "ENV OMEGA_egressPort=3128" in record
+    for secret in ("owner-secret", "f" * 48, "provider-key"):
+        assert secret not in record

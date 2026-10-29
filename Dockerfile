@@ -124,6 +124,10 @@ COPY --from=builder /opt/sentence_transformers /opt/sentence_transformers
 RUN useradd --system --user-group --no-create-home --shell /usr/sbin/nologin omegagate \
  && install -d -o omegagate -g omegagate -m 0700 /var/lib/omega-gate
 
+# Egress proxy user: runs egress/proxy.py, the only route from the agent to
+# the internet besides the credential proxy. Holds no secrets.
+RUN useradd --system --user-group --no-create-home --shell /usr/sbin/nologin omegaegress
+
 # setup nginx proxy
 RUN usermod -a -G tty www-data
 RUN mkdir /opt/nginx

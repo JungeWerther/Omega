@@ -10,6 +10,7 @@ without Landlock.
 
 import functools
 import os
+import socket
 import enum
 import shutil
 import site
@@ -19,7 +20,7 @@ import tempfile
 import yaml
 import json
 from dataclasses import dataclass
-from py_landlock import Landlock, AccessFs, get_abi_version
+from py_landlock import Landlock, AccessFs, AccessNet, get_abi_version
 from pathlib import Path
 from glob import glob
 from src.logger import get_logger
@@ -200,6 +201,50 @@ def require_minimum_abi():
     return abi
 
 
+# Ports tried, in order, to prove outbound TCP is restricted; the first one
+# the policy does not allow is used.
+_PROBE_PORTS = (9, 7, 1, 13)
+
+
+def verify_network_enforced(allowed_ports):
+    """Raise SandboxNotEnforced unless connecting to a port outside the
+    policy is refused by Landlock (EACCES) rather than by the network."""
+    port = next(p for p in _PROBE_PORTS if p not in allowed_ports)
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.settimeout(2)
+    try:
+        probe.connect(("127.0.0.1", port))
+    except PermissionError:
+        return
+    except OSError:
+        raise SandboxNotEnforced(
+            "outbound TCP is not restricted: this kernel's Landlock has no network "
+            "rules (needs ABI 4, Linux 6.7 or newer). Upgrade the host kernel, or pass "
+            "allowUnrestrictedNetwork=True to let the agent connect anywhere."
+        )
+    finally:
+        probe.close()
+    raise SandboxNotEnforced(f"a TCP connection to port {port} was allowed")
+
+
+def _config_ports(key):
+    try:
+        from config import config_get_by_key
+    except ImportError:
+        return []
+    value = config_get_by_key(key, "")
+    return [int(p) for p in str(value or "").split(",") if str(p).strip()]
+
+
+def _allow_unrestricted_network():
+    try:
+        from config import config_get_by_key
+    except ImportError:
+        return False
+    value = config_get_by_key("allowUnrestrictedNetwork", False)
+    return value is True or str(value).strip().lower() in _TRUTHY
+
+
 @sandbox_required
 def apply_security_policy(path):
     if not _policy_key(path):
@@ -209,13 +254,25 @@ def apply_security_policy(path):
     policy.load_file(_policy_key(path))
     policy.prepare()
     policy.validate()
+    if policy.connect_ports is not None:
+        if _allow_unrestricted_network():
+            logger.critical("Network NOT restricted (allowUnrestrictedNetwork=True): "
+                            "the agent can open TCP connections to any host.")
+            policy.connect_ports = None
+        else:
+            policy.add_connect_ports(_config_ports("egressExtraPorts"))
     ro = policy._resolve_paths(policy._read_only, logging=False)
     rw = policy._resolve_paths(policy._read_write, logging=False)
     probe = choose_probe(ro, rw)
     policy.apply()
     verify_enforced(probe)
+    if policy.connect_ports is not None:
+        verify_network_enforced(policy.connect_ports)
     _applied_paths[_policy_key(path)] = policy.resolved_paths
-    logger.info(f"Sandbox enforced (Landlock ABI {abi}; verified: {probe.kind} of {probe.path} is denied)")
+    network = ("unrestricted" if policy.connect_ports is None
+               else f"TCP connect only to ports {policy.connect_ports}")
+    logger.info(f"Sandbox enforced (Landlock ABI {abi}; verified: {probe.kind} of {probe.path} is denied; "
+                f"network: {network})")
 
 def get_allowed_policy_paths(path) -> str:
     """
@@ -289,6 +346,13 @@ class FileSystemPolicy:
         self._optional = set()
         self._create = set()
         self.resolved_paths = ([], [])
+        # None: no network rules. A list: the only TCP ports that may be
+        # connected to; binding is denied.
+        self.connect_ports = None
+
+    def add_connect_ports(self, ports):
+        if self.connect_ports is not None:
+            self.connect_ports = sorted(set(self.connect_ports) | {int(p) for p in ports})
 
     def _entries(self, items):
         """Paths from policy entries. An entry is a path string or a mapping
@@ -378,6 +442,11 @@ class FileSystemPolicy:
         self._read_only = ro
         self._read_write = rw
 
+        net = policy.get('network_policy')
+        self.connect_ports = None
+        if net is not None:
+            self.connect_ports = sorted({int(p) for p in (net.get('connect_tcp') or [])})
+
     @staticmethod
     def _resolve_paths(paths: list[Path], logging: bool = True) -> list[Path]:
         """Expand glob patterns and drop paths missing on a host machine.
@@ -449,9 +518,12 @@ class FileSystemPolicy:
         rwf = list(filter(lambda p: not p.is_dir(), rw))
 
         strict = self._compatibility == LandLockCompatibility.HARD_REQUIREMENT
-        Landlock(strict=strict) \
-            .allow_all_scope() \
-            .allow_all_network() \
+        ruleset = Landlock(strict=strict).allow_all_scope()
+        if self.connect_ports is None:
+            ruleset.allow_all_network()
+        elif self.connect_ports:
+            ruleset.add_net_rule(*self.connect_ports, access=AccessNet.CONNECT_TCP)
+        ruleset \
             .add_path_rule('/', access=AccessFs.EXECUTE) \
             .add_path_rule(*rwd, access=FileSystemPolicy.READ_WRITE_DIR_ACCESS) \
             .add_path_rule(*rwf, access=FileSystemPolicy.READ_WRITE_FILE_ACCESS) \
