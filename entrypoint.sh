@@ -68,44 +68,51 @@ OMEGA_GATE_KEY=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
 export OMEGA_GATE_KEY
 
 install -d -o "${GATE_USER}" -g "${GATE_USER}" -m 0700 "${GATE_STATE_DIR}"
+# One-time move of records written by older versions, which kept them in
+# the agent-writable memory volume. The marker is written even when there was
+# nothing to move, so records the agent plants there later are never imported.
 legacy_auth_dir="${MEMORY_DIR}/.channel"
-if [ -z "$(ls -A "${GATE_STATE_DIR}")" ] && [ -d "${legacy_auth_dir}" ]; then
-  # One-time move of records written by older versions, which kept them in
-  # the agent-writable memory volume.
+migration_marker="${GATE_STATE_DIR}/.legacy-migration-done"
+if [ ! -e "${migration_marker}" ]; then
   for record in authenticated-user.json authenticated-group.json; do
-    if [ -f "${legacy_auth_dir}/${record}" ] && [ ! -L "${legacy_auth_dir}/${record}" ]; then
+    if [ -f "${legacy_auth_dir}/${record}" ] && [ ! -L "${legacy_auth_dir}/${record}" ] \
+       && [ ! -e "${GATE_STATE_DIR}/${record}" ]; then
       install -o "${GATE_USER}" -g "${GATE_USER}" -m 0600 \
         "${legacy_auth_dir}/${record}" "${GATE_STATE_DIR}/${record}"
       echo "gate: migrated ${record} from the memory volume; review it if the agent may have been compromised" >&2
     fi
   done
+  install -o "${GATE_USER}" -g "${GATE_USER}" -m 0600 /dev/null "${migration_marker}"
 fi
 
 su www-data -s /bin/sh -c "sh /opt/nginx/nginx.sh"
 
-gate_env=(
-  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-  HOME="${GATE_STATE_DIR}"
-  LANG="${LANG:-C.UTF-8}"
-  PYTHONDONTWRITEBYTECODE=1
-  PYTHONUNBUFFERED=1
-  OMEGA_AUTH_SECRET="${OMEGA_AUTH_SECRET:-}"
-  OMEGA_GATE_KEY="${OMEGA_GATE_KEY}"
-  OMEGA_GATEWAY_URL="http://127.0.0.1:8080/gate/${OMEGA_GATE_KEY}"
-  OMEGA_authStateDir="${GATE_STATE_DIR}"
-  OMEGA_gatePort="${GATE_PORT}"
-  OMEGA_WS_TOKEN="${OMEGA_WS_TOKEN:-}"
-  TEST_SERVER_IP="${TEST_SERVER_IP:-}"
-)
-(
+# Supervise the gate. The environment is rebuilt with shell builtins inside
+# this subshell, so secrets are only ever inherited as environment variables
+# and never appear in any process's argv (/proc/<pid>/cmdline is readable by
+# every user, including the agent).
+run_gate() {
+  local name
+  for name in $(compgen -e); do
+    case "${name}" in
+      OMEGA_AUTH_SECRET|OMEGA_GATE_KEY|OMEGA_WS_TOKEN|TEST_SERVER_IP|LANG) ;;
+      *) unset "${name}" 2>/dev/null || true ;;
+    esac
+  done
+  export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  export HOME="${GATE_STATE_DIR}" LANG="${LANG:-C.UTF-8}"
+  export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+  export OMEGA_GATEWAY_URL="http://127.0.0.1:8080/gate/${OMEGA_GATE_KEY}"
+  export OMEGA_authStateDir="${GATE_STATE_DIR}" OMEGA_gatePort="${GATE_PORT}"
   cd "${OMEGA_DIR}"
   while :; do
     setpriv --reuid="${GATE_USER}" --regid="${GATE_USER}" --init-groups --no-new-privs \
-      env -i "${gate_env[@]}" python3 -I "${OMEGA_DIR}/gate/main.py" "$@" \
+      python3 -I "${OMEGA_DIR}/gate/main.py" "$@" \
       || echo "gate exited with status $?, restarting" >&2
     sleep 1
   done
-) &
+}
+( run_gate "$@" ) &
 unset OMEGA_AUTH_SECRET OMEGA_WS_TOKEN OMEGA_GATE_KEY
 
 for _ in $(seq 1 120); do

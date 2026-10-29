@@ -30,7 +30,7 @@ from gate.server import bind_channel_routes, serve  # noqa: E402
 logger = logging.getLogger("gate")
 
 DEFAULT_PORT = 8090
-_SECRET_ENVIRONMENT = ("OMEGA_AUTH_SECRET", "OMEGA_GATE_KEY")
+_SECRET_ENVIRONMENT = ("OMEGA_AUTH_SECRET", "OMEGA_GATE_KEY", "OMEGA_WS_TOKEN")
 
 
 def redact_secrets(secrets):

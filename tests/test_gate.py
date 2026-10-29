@@ -4,9 +4,12 @@ import importlib
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -41,7 +44,7 @@ class FakeChannels(types.SimpleNamespace):
 def running_gate():
     gate_server.ROUTES.clear()
     fake = FakeChannels()
-    gate_server.bind_channel_routes(fake, "telegram")
+    fake.sender = gate_server.bind_channel_routes(fake, "telegram")
     httpd = gate_server.serve("127.0.0.1", 0)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -60,6 +63,7 @@ def test_client_round_trip_through_gate(running_gate):
     assert client.receive() == "owner: hello"
     assert client.receive() == ""
     client.send("reply")
+    fake.sender.join()
     assert fake.sent == ["reply"]
     assert client.principal() == "telegram:owner-id"
 
@@ -94,6 +98,42 @@ def test_oversized_body_is_refused(running_gate):
 
     with pytest.raises(Exception):
         client.send("x" * (gate_server.MAX_BODY_BYTES + 1))
+    assert fake.sent == []
+
+
+def test_send_is_acknowledged_before_slow_delivery_and_keeps_order(running_gate):
+    fake, url = running_gate
+    release = threading.Event()
+    original = fake.commChannelSend
+
+    def slow_send(message):
+        release.wait(5)
+        original(message)
+
+    fake.sender._deliver = slow_send
+    client = channels.GateChannel(url)
+    started = time.monotonic()
+    for index in range(3):
+        client.send(f"part {index}")
+    assert time.monotonic() - started < 2
+    release.set()
+    fake.sender.join()
+
+    assert fake.sent == ["part 0", "part 1", "part 2"]
+
+
+@pytest.mark.parametrize("length", ["-1", "abc", "1e3", " 12x"])
+def test_malformed_content_length_is_rejected(running_gate, length):
+    fake, url = running_gate
+    host, port = url.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port)), timeout=5) as connection:
+        connection.sendall(
+            f"POST /v1/send HTTP/1.1\r\nHost: x\r\nContent-Length: {length}\r\n\r\n".encode()
+            + b'{"message": "' + b"x" * 100 + b'"}'
+        )
+        status_line = connection.recv(1024).split(b"\r\n", 1)[0]
+
+    assert b" 400 " in status_line
     assert fake.sent == []
 
 
@@ -183,23 +223,38 @@ GATE_UID = 65533
 
 @pytest.mark.skipif(os.geteuid() != 0 or shutil.which("setpriv") is None,
                     reason="needs root and setpriv to switch users")
-def test_agent_user_cannot_plant_auth_records(tmp_path):
-    state = tmp_path / "omega-gate"
-    state.mkdir(mode=0o700)
-    os.chown(state, GATE_UID, GATE_UID)
-    tmp_path.chmod(0o755)
-    record = (
-        '{"channel_identifier":"TELEGRAM","group_id":"-100attacker",'
-        '"authorized_by":"42"}'
-    )
+def test_agent_user_cannot_plant_auth_records():
+    # A directory whose every ancestor the agent can traverse, so a denial
+    # can only come from the gate directory itself.
+    parent = Path(tempfile.mkdtemp(dir="/tmp"))
+    try:
+        parent.chmod(0o755)
+        public = parent / "public.txt"
+        public.write_text("readable")
+        public.chmod(0o644)
+        state = parent / "omega-gate"
+        state.mkdir(mode=0o700)
+        os.chown(state, GATE_UID, GATE_UID)
+        record = (
+            '{"channel_identifier":"TELEGRAM","group_id":"-100attacker",'
+            '"authorized_by":"42"}'
+        )
 
-    attack = subprocess.run(
-        ["setpriv", f"--reuid={AGENT_UID}", f"--regid={AGENT_UID}", "--clear-groups",
-         sys.executable, "-I", "-c",
-         f"open({str(state / 'authenticated-group.json')!r}, 'a').write({record!r})"],
-        capture_output=True, text=True,
-    )
+        def as_agent(code):
+            return subprocess.run(
+                ["setpriv", f"--reuid={AGENT_UID}", f"--regid={AGENT_UID}", "--clear-groups",
+                 sys.executable, "-I", "-c", code],
+                capture_output=True, text=True,
+            )
 
-    assert attack.returncode != 0
-    assert "PermissionError" in attack.stderr
-    assert not (state / "authenticated-group.json").exists()
+        control = as_agent(f"print(open({str(public)!r}).read())")
+        assert control.returncode == 0, control.stderr
+        assert control.stdout.strip() == "readable"
+
+        attack = as_agent(f"open({str(state / 'authenticated-group.json')!r}, 'a').write({record!r})")
+
+        assert attack.returncode != 0
+        assert "PermissionError" in attack.stderr
+        assert not (state / "authenticated-group.json").exists()
+    finally:
+        shutil.rmtree(parent)

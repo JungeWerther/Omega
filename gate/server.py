@@ -10,12 +10,15 @@ owner or group records on the agent's say-so.
 
 import json
 import logging
+import queue
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 64 * 1024
+MAX_QUEUED_SENDS = 1000
 
 ROUTES = {}
 
@@ -45,7 +48,10 @@ class _Handler(BaseHTTPRequestHandler):
         logger.debug("gate %s", format % args)
 
     def _body(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_length = (self.headers.get("Content-Length") or "0").strip()
+        if not raw_length.isdigit():
+            raise GateError(HTTPStatus.BAD_REQUEST, "invalid Content-Length")
+        length = int(raw_length)
         if length > MAX_BODY_BYTES:
             raise GateError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body too large")
         if not length:
@@ -85,8 +91,43 @@ class _Handler(BaseHTTPRequestHandler):
         self._dispatch("POST")
 
 
+class OrderedSender:
+    """Delivers outbound messages one at a time, in order, on its own thread.
+
+    Adapters deliver synchronously and some pace themselves (IRC waits a
+    second per line), so the agent gets an acknowledgement as soon as the
+    message is queued instead of waiting for delivery.
+    """
+
+    def __init__(self, deliver, capacity=MAX_QUEUED_SENDS):
+        self._deliver = deliver
+        self._queue = queue.Queue(maxsize=capacity)
+        threading.Thread(target=self._run, name="gate-sender", daemon=True).start()
+
+    def submit(self, message):
+        try:
+            self._queue.put_nowait(message)
+        except queue.Full as exc:
+            raise GateError(HTTPStatus.SERVICE_UNAVAILABLE, "send queue is full") from exc
+
+    def join(self):
+        self._queue.join()
+
+    def _run(self):
+        while True:
+            message = self._queue.get()
+            try:
+                self._deliver(message)
+            except Exception as exc:
+                logger.exception(f"gate: delivering a message failed: {exc}")
+            finally:
+                self._queue.task_done()
+
+
 def bind_channel_routes(channels_module, commchannel_id):
-    """Register the agent-facing endpoints against a started channel."""
+    """Register the agent-facing endpoints against a started channel.
+    Returns the sender so callers (and tests) can wait for delivery."""
+    sender = OrderedSender(channels_module.commChannelSend)
 
     @route("GET", "/v1/health")
     def health(_body):
@@ -101,12 +142,14 @@ def bind_channel_routes(channels_module, commchannel_id):
         message = (body or {}).get("message")
         if not isinstance(message, str):
             raise GateError(HTTPStatus.BAD_REQUEST, "message must be a string")
-        channels_module.commChannelSend(message)
-        return {"ok": True}
+        sender.submit(message)
+        return {"ok": True, "queued": True}
 
     @route("GET", "/v1/principal")
     def principal(_body):
         return {"principal": channels_module.local_export_principal(commchannel_id)}
+
+    return sender
 
 
 def serve(host, port):

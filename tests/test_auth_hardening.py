@@ -92,6 +92,27 @@ def test_throttle_window_expires(guards):
     assert check("right") is True
 
 
+def test_rotating_keys_do_not_grow_the_ledger_without_bound(guards):
+    now = [0.0]
+
+    @guards.throttle_failures(limit=5, global_limit=20, window=60,
+                              key=lambda value: value, clock=lambda: now[0])
+    def check(value):
+        return False
+
+    for attempt in range(10_000):
+        now[0] = attempt * 0.01
+        check(f"nick{attempt}")
+
+    # Lookups past the global limit create nothing; recorded keys are capped
+    # by the failures that fit in one window.
+    assert check.failures.tracked_keys() <= 20
+
+    now[0] += 61
+    check("after-window")
+    assert check.failures.tracked_keys() == 1
+
+
 def test_fail_closed_turns_errors_into_denial(guards):
     @guards.fail_closed("ignore")
     def decide():

@@ -115,7 +115,7 @@ def test_message_flows_from_chat_through_gate_to_agent_and_back(gate_process):
     assert message == "ping from owner"
 
     client.send("pong from agent")
-    _wait_for(lambda: server.received)
+    _wait_for(lambda: server.received, timeout=20)
     assert server.received == ["pong from agent"]
 
 
@@ -127,3 +127,8 @@ def test_channel_token_comes_from_gate_environment_not_argv(gate_process):
     cmdline = Path(f"/proc/{process.pid}/cmdline").read_bytes().decode()
     assert "ws-bearer-token" not in cmdline
     assert client.principal() == "websocket:" + hashlib.sha256(b"ws-bearer-token").hexdigest()
+
+    process.terminate()
+    output, _ = process.communicate(timeout=10)
+    assert "ws-bearer-token" not in output
+    assert "a-long-enough-owner-secret" not in output
