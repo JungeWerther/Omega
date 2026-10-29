@@ -16,10 +16,10 @@ Run:
 from helpers import Checker, dexec_root, make_prompt, wait_for_skill_call
 
 
-PROMPT_FILE = "/PeTTa/repos/Omega/memory/prompt.txt"
+PROMPT_FILE = "/PeTTa/repos/Omega/prompts/prompt.txt"
 PROMPT_BAK = "/tmp/prompt.txt.bak"
 
-PROMPT_PROVIDER_FILE = "/PeTTa/repos/Omega/memory/prompt_Test.txt"
+PROMPT_PROVIDER_FILE = "/PeTTa/repos/Omega/prompts/prompt_Test.txt"
 PROMPT_PROVIDER_BAK = "/tmp/prompt_Test.txt.bak"
 
 

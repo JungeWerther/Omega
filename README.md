@@ -141,6 +141,8 @@ Run the system via the following command which ensures the system is started fro
 ```
 OMEGA_AUTH_SECRET=<channel-secret> sh run.sh run.metta IRC_user="<bot-nick>"
 ```
+The agent sandboxes itself with Landlock (Linux 6.2 or newer) using `profile/policy-native.yaml`: it can read the PeTTa checkout and the Python environment, and write only `repos/Omega/memory`, `chroma_db` and temporary directories. On hosts without Landlock it refuses to start unless you add `allowUnsandboxed=True`.
+
 Use a long random `<channel-secret>` (for example `python3 -c 'import secrets; print(secrets.token_urlsafe(18))'`). Without one, nobody can authenticate. Outside Docker the agent can edit its own auth records; see [channel authentication](docs/reference-channel-auth.md).
 After start, connect to irc.libera.chat with TLS (for example https://web.libera.chat/), identify your nickname with NickServ, and send `/msg <bot-nick> auth <channel-secret>` as a private message to become the agent's owner. Never post the secret in a channel. Add `IRC_channel="<irc-channel>"` to also talk in a channel.
 

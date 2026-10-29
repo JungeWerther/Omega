@@ -4,6 +4,6 @@
 
 (= (applySecurityPolicy)
    (progn (log INFO "policy" "Configuring security policy")
-          (configure securityPolicyPath "./repos/Omega/profile/policy.yaml")
+          (configure securityPolicyPath "./repos/Omega/profile/policy-native.yaml")
           (py-call (policy.apply_security_policy (securityPolicyPath)))
           True))

@@ -660,6 +660,7 @@ help() {
     echo -e "\t-t <channel type> set communication channel type: irc|telegram|slack|websocket|mattermost|test"
     echo -e "\t-d <Docker image> set Docker image name (default omega:latest)"
     echo -e "\t-l <logging config> set Python logging config file"
+    echo -e "\t--allow-unsandboxed run the agent even if its Landlock sandbox cannot be applied (unsafe)"
     echo -e "\t--version, -v show the Omega version"
     echo -e "\t--help, -h show this help"
     echo
@@ -724,6 +725,7 @@ options() {
     memory_import_only_history=0
     memory_import_only_vector=0
     memory_export_enabled=0
+    allow_unsandboxed=0
 
     if [[ "$#" -eq 0 ]]; then
         help
@@ -768,6 +770,10 @@ options() {
                 ;;
             --enable-memory-export)
                 memory_export_enabled=1
+                shift
+                ;;
+            --allow-unsandboxed)
+                allow_unsandboxed=1
                 shift
                 ;;
             --memory-import)
@@ -942,7 +948,7 @@ migrate_omegaclaw_memory() {
             -c "date -u > /from/${started_marker}" \
         && docker volume create "${new_volume}" >/dev/null \
         && docker run --rm --entrypoint sh --volume "${new_volume}:${memory_path}" "${image}" \
-            -c "test -f ${memory_path}/prompt.txt" \
+            -c "test -f ${memory_path}/history.metta" \
         && docker run --rm --entrypoint sh \
             --volume "${old_volume}:/from:ro" --volume "${new_volume}:/to" "${image}" \
             -c 'list=$(mktemp) && cd /from && find . -mindepth 1 -maxdepth 1 ! -name "prompt*.txt" ! -name tg_prompt.txt ! -name .migration-started > "$list" && while IFS= read -r entry; do rm -rf "/to/$entry" && cp -a "$entry" /to/ || exit 1; done < "$list"' \
@@ -1202,6 +1208,11 @@ if sys.argv[1]:
             "securityPolicyPath=/PeTTa/repos/Omega/profile/policy.yaml"
             ${memory_export_option[@]+"${memory_export_option[@]}"}
     )
+
+    if [ "${allow_unsandboxed}" = "1" ]; then
+        echo "WARNING: --allow-unsandboxed: the agent will run without its filesystem sandbox if Landlock is unavailable." >&2
+        docker_cmd+=("allowUnsandboxed=True")
+    fi
 
     if [ -n "${container_log_config_path}" ]; then
         docker_cmd+=("logConfigPath=${container_log_config_path}")

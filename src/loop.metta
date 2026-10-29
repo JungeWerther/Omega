@@ -36,7 +36,7 @@
 
 (= (addTelegramPromptExtension)
    (if (== (commchannel) telegram)
-       (let $path (joinPath ((memoryDirectory) "tg_prompt.txt"))
+       (let $path (library Omega ./prompts/tg_prompt.txt)
             (if (exists-file $path)
                 (add-prompt-extension tg-prompt (read-file $path))
                 (progn (log WARN "loop" (TELEGRAM_PROMPT_NOT_FOUND: $path))

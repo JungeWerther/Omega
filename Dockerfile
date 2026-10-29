@@ -150,7 +150,9 @@ RUN cp ${OMEGA_DIR}/run.metta /PeTTa/run.metta \
  && chown 65534:65534 /memory-transfer \
  && chmod 0700 /memory-transfer \
  && find ${MEMORY_DIR} -type f -exec chmod 0644 {} \; \
- && chmod 0444 ${MEMORY_DIR}/prompt.txt \
+ && chown -R root:root ${OMEGA_DIR}/prompts \
+ && chmod 0755 ${OMEGA_DIR}/prompts \
+ && chmod 0444 ${OMEGA_DIR}/prompts/* \
  && chown -R 65534:65534 /opt/huggingface /opt/sentence_transformers
 
 ENTRYPOINT ["/PeTTa/repos/Omega/entrypoint.sh"]
