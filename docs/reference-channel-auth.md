@@ -46,6 +46,23 @@ directly.
 * Wrong guesses are rate limited: 5 per sender and 20 in total per 15
   minutes. During a lockout even the correct secret is refused.
 
+## Group tiers (Telegram)
+
+When the owner sends `/bind` in a group, every member can talk to the bot
+there. What they may make it *do* depends on the tier:
+
+| Bind command | Tier | Members' messages |
+|---|---|---|
+| `/bind` | `chat` (default) | Reach the agent labelled as untrusted input, like a web page. They taint the turn, so shell, file writes and other actions they lead to wait for the owner's `/approve`. Members cannot approve. |
+| `/bind tools` | `tools` | Act with the owner's authority. |
+
+Only the owner can change a group's tier, by sending `/bind` or
+`/bind tools` again. The owner's own messages are always trusted. Groups
+bound before tiers existed are `chat`. The tier travels with each message
+from the channel plugin through the gate (`/v1/receive` returns
+`trusted`), never as message text a member could forge. The agent-side
+client treats a missing flag as untrusted.
+
 ## Failing closed
 
 | Situation | Before | Now |

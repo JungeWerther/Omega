@@ -17,6 +17,13 @@ http {
 
     client_max_body_size 16m;
 
+    # Budget for the paid provider routes: the agent can call them directly,
+    # so a runaway or prompt-injected agent could otherwise spend without
+    # limit. All callers are local, so one shared bucket covers the agent.
+    # Rates come from OMEGA_LLM_RATE_PER_MINUTE / OMEGA_LLM_BURST (nginx.sh).
+    limit_req_zone $server_port zone=llm_budget:1m rate=${OMEGA_LLM_RATE_PER_MINUTE}r/m;
+    limit_req_status 429;
+
     proxy_connect_timeout 30s;
     proxy_send_timeout    120s;
     proxy_read_timeout    120s;
@@ -30,6 +37,8 @@ http {
         # which accepts Bearer auth like OpenAI. The native /v1/messages API
         # uses x-api-key, but the openai Python client targets the compat endpoint.
         location /anthropic/ {
+            limit_req zone=llm_budget burst=${OMEGA_LLM_BURST} nodelay;
+            client_max_body_size 4m;
             proxy_pass https://api.anthropic.com/v1/;
             proxy_set_header Authorization "Bearer ${ANTHROPIC_API_KEY}";
             proxy_set_header Host api.anthropic.com;
@@ -42,6 +51,8 @@ http {
         }
 
         location /asicloud/ {
+            limit_req zone=llm_budget burst=${OMEGA_LLM_BURST} nodelay;
+            client_max_body_size 4m;
             proxy_pass https://inference.asicloud.cudos.org/v1/;
             proxy_set_header Authorization "Bearer ${ASI_API_KEY}";
             proxy_set_header Host inference.asicloud.cudos.org;
@@ -54,6 +65,8 @@ http {
         }
 
         location /openai/ {
+            limit_req zone=llm_budget burst=${OMEGA_LLM_BURST} nodelay;
+            client_max_body_size 4m;
             proxy_pass https://api.openai.com/v1/;
             proxy_set_header Authorization "Bearer ${OPENAI_API_KEY}";
             proxy_set_header Host api.openai.com;
@@ -66,6 +79,8 @@ http {
         }
 
         location /asione/ {
+            limit_req zone=llm_budget burst=${OMEGA_LLM_BURST} nodelay;
+            client_max_body_size 4m;
             proxy_pass https://api.asi1.ai/v1/;
             proxy_set_header Authorization "Bearer ${ASIONE_API_KEY}";
             proxy_set_header Host api.asi1.ai;
@@ -78,6 +93,8 @@ http {
         }
 
         location /openaiapi/ {
+            limit_req zone=llm_budget burst=${OMEGA_LLM_BURST} nodelay;
+            client_max_body_size 4m;
             proxy_pass ${OPENAIAPI_URL};
             proxy_set_header Authorization "Bearer ${OPENAIAPI_API_KEY}";
             proxy_set_header Content-Type $content_type;
@@ -91,6 +108,8 @@ http {
         # OpenClaw Gateway: inject Bearer token, upstream is set at container
         # start via the openclaw_url= argument (see entrypoint.sh).
         location = /openclaw/v1/responses {
+            limit_req zone=llm_budget burst=${OMEGA_LLM_BURST} nodelay;
+            client_max_body_size 4m;
             proxy_pass ${OPENCLAW_URL}v1/responses;
             proxy_set_header Authorization "Bearer ${OMEGA_OPENCLAW_TOKEN}";
             proxy_set_header Content-Type $content_type;
@@ -102,6 +121,8 @@ http {
         }
 
         location /openrouter/ {
+            limit_req zone=llm_budget burst=${OMEGA_LLM_BURST} nodelay;
+            client_max_body_size 4m;
             proxy_pass https://openrouter.ai/api/v1/;
             proxy_set_header Authorization "Bearer ${OPENROUTER_API_KEY}";
             proxy_set_header Host openrouter.ai;

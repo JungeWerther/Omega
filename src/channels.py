@@ -82,6 +82,11 @@ class CommChannel:
         """Receive message from the communication channel"""
         raise NotImplementedError()
 
+    def receive_with_trust(self):
+        """(message, trusted): whether the sender acts with the owner's
+        authority. Channels where only the owner can write are trusted."""
+        return self.receive(), True
+
     def send(self, message: str) -> None:
         """Send message via the communication channel"""
         raise NotImplementedError()
@@ -131,11 +136,16 @@ class GateChannel(CommChannel):
         self._call("GET", "/v1/health")
 
     def receive(self) -> str:
+        return self.receive_with_trust()[0]
+
+    def receive_with_trust(self):
         try:
-            return str(self._call("GET", "/v1/receive").get("message") or "")
+            payload = self._call("GET", "/v1/receive")
         except Exception as exc:
             logger.warning(f"Gate receive failed, treating as no message: {exc}")
-            return ""
+            return "", True
+        # A gate that does not say the sender is trusted is not believed.
+        return str(payload.get("message") or ""), payload.get("trusted") is True
 
     def send(self, message: str) -> None:
         self._call("POST", "/v1/send", {"message": str(message)})
@@ -179,6 +189,20 @@ def commChannelReceiveRaw():
     return _commchannel.receive()
 
 
+def _receive_with_trust(channel):
+    """Channel plugins that predate trust levels only have receive(); they
+    are owner-only channels, so their messages are trusted."""
+    receive_with_trust = getattr(channel, "receive_with_trust", None)
+    if callable(receive_with_trust):
+        return receive_with_trust()
+    return channel.receive(), True
+
+
+def commChannelReceiveWithTrust():
+    """(message, trusted) from the selected channel, for the gate."""
+    return _receive_with_trust(_commchannel)
+
+
 def _command_text(message: str) -> str:
     _, separator, command = message.rpartition(": ")
     return command if separator else message
@@ -194,7 +218,12 @@ def commChannelReceive():
     """
     import guard
 
-    raw = _commchannel.receive()
+    raw, trusted = _receive_with_trust(_commchannel)
+    if raw and not trusted:
+        # A group member without the owner's authority: their words are
+        # untrusted input, like a web page. They cannot approve anything.
+        guard.guard().taint("group member")
+        return guard.guard().label("group member", raw)
     forwarded, genuine = [], False
     for message in raw.split(" | ") if raw else []:
         if handle_control_message(message):

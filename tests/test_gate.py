@@ -33,6 +33,9 @@ class FakeChannels(types.SimpleNamespace):
     def commChannelReceiveRaw(self):
         return self.inbox.pop(0) if self.inbox else ""
 
+    def commChannelReceiveWithTrust(self):
+        return self.commChannelReceiveRaw(), True
+
     def commChannelSend(self, message):
         self.sent.append(message)
 

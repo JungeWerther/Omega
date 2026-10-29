@@ -147,9 +147,16 @@ class Guard:
         text = str(result)
         if skill in TRUSTED_OUTPUT or text.startswith("HELD_FOR_OWNER_APPROVAL") or not carries_content(text):
             return text
+        self.taint(skill)
+        return self.label(skill, text)
+
+    def taint(self, source):
         with self._lock:
-            self.tainted_by.add(skill)
-        return f'{_OPEN} source="{skill}">\n{_neutralize(text)}\n{_CLOSE}'
+            self.tainted_by.add(source)
+
+    @staticmethod
+    def label(source, text):
+        return f'{_OPEN} source="{source}">\n{_neutralize(text)}\n{_CLOSE}'
 
     def human_turn(self):
         """A new message from the owner starts a new, untainted turn."""

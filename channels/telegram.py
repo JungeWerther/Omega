@@ -31,6 +31,7 @@ _connected = False
 _admin_allowed_chats = set()
 _owner_id = None
 _authorized_groups = set()
+_group_tiers = {}
 
 _auto_bound_chat = ""
 
@@ -43,23 +44,38 @@ _ROUTED_MESSAGE_RE = re.compile(
 _TARGET_ONLY_MESSAGE_RE = re.compile(r"^\s*\[(-?\d+)\]\s*(.*)$", re.DOTALL)
 
 
-def _enqueue_message(msg, chat_id, reply_to_id=None):
+def _enqueue_message(msg, chat_id, reply_to_id=None, trusted=True):
     with _msg_lock:
         _inbox.append(
             (
                 str(chat_id),
                 str(reply_to_id) if reply_to_id is not None else "",
                 str(msg),
+                bool(trusted),
             )
         )
 
 
-def getLastMessage():
+def getLastMessageWithTrust():
+    """(message, trusted). A message is trusted when the owner wrote it, or
+    a member of a group the owner bound with the "tools" tier."""
     with _msg_lock:
         if not _inbox:
-            return ""
-        chat_id, reply_to_id, message = _inbox.popleft()
-    return f"[{chat_id}] [{reply_to_id}] {message}"
+            return "", True
+        chat_id, reply_to_id, message, trusted = _inbox.popleft()
+    return f"[{chat_id}] [{reply_to_id}] {message}", trusted
+
+
+def getLastMessage():
+    return getLastMessageWithTrust()[0]
+
+
+def _sender_is_trusted(chat_id, user_id):
+    if not auth.is_auth_enabled():
+        return True  # the operator chose allowUnauthenticated
+    if _owner_id is not None and user_id == _owner_id:
+        return True
+    return _group_tiers.get(chat_id) == auth.TIER_TOOLS
 
 
 def _ready_to_send():
@@ -297,6 +313,7 @@ def _is_allowed_message(chat_id, user_id, chat_type, msg):
                 if state == "group_unbound":
                     _authorized_groups.discard(group_id)
                     _admin_allowed_chats.discard(group_id)
+                    _group_tiers.pop(group_id, None)
                 return state
             return "ignore"
         return "allow" if user_id == owner_id else "ignore"
@@ -308,17 +325,20 @@ def _is_allowed_message(chat_id, user_id, chat_type, msg):
             if state == "group_unbound":
                 _authorized_groups.discard(chat_id)
                 _admin_allowed_chats.discard(chat_id)
+                _group_tiers.pop(chat_id, None)
             return state
         return "ignore"
 
-    if chat_id in _authorized_groups:
+    if chat_id in _authorized_groups and not (user_id == owner_id and _is_bind_command(msg)):
         return "allow"
 
     if user_id == owner_id and _is_bind_command(msg):
-        state = auth.authorize_channel_group("TELEGRAM", chat_id, user_id)
+        tier = auth.TIER_TOOLS if _command_argument(msg).lower() == auth.TIER_TOOLS else auth.TIER_CHAT
+        state = auth.authorize_channel_group("TELEGRAM", chat_id, user_id, tier)
         if state in {"allow", "group_bound"}:
             _authorized_groups.add(chat_id)
             _admin_allowed_chats.add(chat_id)
+            _group_tiers[chat_id] = auth.get_channel_group_tier("TELEGRAM", chat_id) or auth.TIER_CHAT
         return state
 
     return "ignore"
@@ -407,7 +427,8 @@ def _process_update(update):
 
     if state == "allow":
         _flush_deferred_default_outbox()
-        _enqueue_message(f"{display_name}: {text}", chat_id, message_id)
+        _enqueue_message(f"{display_name}: {text}", chat_id, message_id,
+                         trusted=_sender_is_trusted(chat_id, user_id))
     elif state == "auth_bound":
         send_message(
             f"Authentication successful. {display_name} is now the bot owner. "
@@ -417,11 +438,14 @@ def _process_update(update):
         )
         _flush_deferred_default_outbox()
     elif state == "group_bound":
-        send_message(
-            "This group is now authorized. All members can talk to the bot here.",
-            chat_id,
-            message_id
-        )
+        if _group_tiers.get(chat_id) == auth.TIER_TOOLS:
+            notice = ("This group is now authorized with the tools tier: every member can "
+                      "make the bot run commands and change files, like the owner.")
+        else:
+            notice = ("This group is now authorized. Members can talk to the bot here; actions "
+                      "their messages lead to need the owner's approval. The owner can send "
+                      "/bind tools to give members full access.")
+        send_message(notice, chat_id, message_id)
     elif state == "group_unbound":
         send_message("This group is no longer authorized.", chat_id, message_id)
 
@@ -489,6 +513,8 @@ def start_telegram(chat_id="", allowed_chat_ids="", poll_timeout=20):
     _auto_bound_chat = ""
     if auth.is_auth_enabled():
         _owner_id, _authorized_groups = auth.load_channel_auth_state("TELEGRAM")
+        _group_tiers.clear()
+        _group_tiers.update(auth.load_channel_group_tiers("TELEGRAM"))
         _admin_allowed_chats.update(_authorized_groups)
         # Telegram private chat IDs are the owner's user ID, so persisted
         # ownership gives proactive messages a safe destination after restart.
@@ -544,6 +570,9 @@ class TelegramChannel(channels.CommChannel):
 
     def receive(self) -> str:
         return getLastMessage()
+
+    def receive_with_trust(self):
+        return getLastMessageWithTrust()
 
     def send(self, message: str) -> None:
         send_message(message)
