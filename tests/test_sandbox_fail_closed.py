@@ -365,3 +365,14 @@ def test_docker_entrypoint_selects_the_docker_policy():
     entrypoint = (REPO_ROOT / "entrypoint.sh").read_text()
 
     assert "securityPolicyPath=${OMEGA_DIR}/profile/policy.yaml $*" in entrypoint
+
+
+def test_prolog_home_is_readable_when_python_is_embedded(monkeypatch, tmp_path):
+    home = tmp_path / "lib" / "swipl"
+    (home / "bin" / "x86_64-linux").mkdir(parents=True)
+    swipl = home / "bin" / "x86_64-linux" / "swipl"
+    swipl.write_text("")
+    monkeypatch.setattr(policy.sys, "executable", str(swipl))
+    monkeypatch.delenv("SWI_HOME_DIR", raising=False)
+
+    assert home in policy.FileSystemPolicy._python_runtime_paths()

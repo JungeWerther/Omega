@@ -312,11 +312,26 @@ class FileSystemPolicy:
 
     @staticmethod
     def _python_runtime_paths():
-        """Directories the running Python interpreter imports from."""
+        """Directories the running interpreters load code from: Python's
+        prefixes and site-packages, and, when Python is embedded in
+        SWI-Prolog (the agent), the SWI-Prolog home, whose libraries are
+        autoloaded lazily long after the sandbox is applied."""
         candidates = {sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix,
                       *site.getsitepackages(), site.getusersitepackages()}
         candidates.update(p for p in sys.path if p and os.path.isabs(p))
+        candidates.update(FileSystemPolicy._prolog_home())
         return sorted(Path(p) for p in candidates if os.path.isdir(p))
+
+    @staticmethod
+    def _prolog_home():
+        homes = set()
+        if os.environ.get("SWI_HOME_DIR"):
+            homes.add(os.environ["SWI_HOME_DIR"])
+        executable = Path(sys.executable or "").resolve()
+        if executable.name.startswith("swipl"):
+            # <home>/bin/<arch>/swipl
+            homes.add(str(executable.parents[2]))
+        return homes
 
     def prepare(self):
         """Create the directories the policy marks with `create: true`."""
