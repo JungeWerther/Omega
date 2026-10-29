@@ -713,11 +713,22 @@ def test_egress_allow_extends_the_allowlist(tmp_path):
     assert "<egressExtraDomains=github.com,pypi.org>" in _agent_run(result)
 
 
-def test_egress_allow_rejects_non_domains(tmp_path):
+def test_egress_allow_rejects_non_hosts_before_touching_the_running_agent(tmp_path):
     result = _run_launcher(tmp_path, "--egress-allow", "github.com /etc", memory_import=False)
 
     assert result.returncode != 0
-    assert "comma-separated domain names" in result.stderr
+    assert "comma-separated host names" in result.stderr
+    assert "<rm>" not in result.stdout and "<run>" not in result.stdout
+
+
+def test_egress_allow_accepts_subdomain_wildcards(tmp_path):
+    result = _run_launcher(tmp_path, "--egress-allow", "*.githubusercontent.com", memory_import=False)
+
+    assert "<egressExtraDomains=*.githubusercontent.com>" in _agent_run(result)
+
+
+def test_container_can_install_the_agent_firewall(tmp_path):
+    assert "<--cap-add> <NET_ADMIN>" in _agent_run(_run_launcher(tmp_path, memory_import=False))
 
 
 def test_unrestricted_network_is_an_explicit_flag(tmp_path):

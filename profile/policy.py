@@ -8,6 +8,7 @@ the process exits (status 78, EX_CONFIG) instead of running unsandboxed.
 without Landlock.
 """
 
+import errno
 import functools
 import os
 import socket
@@ -201,30 +202,103 @@ def require_minimum_abi():
     return abi
 
 
-# Ports tried, in order, to prove outbound TCP is restricted; the first one
-# the policy does not allow is used.
-_PROBE_PORTS = (9, 7, 1, 13)
+# A TEST-NET-1 address: never a real host, used to check that UDP is refused.
+_UNROUTABLE = ("192.0.2.1", 9)
+MINIMUM_NETWORK_ABI = 4
 
 
-def verify_network_enforced(allowed_ports):
-    """Raise SandboxNotEnforced unless connecting to a port outside the
-    policy is refused by Landlock (EACCES) rather than by the network."""
-    port = next(p for p in _PROBE_PORTS if p not in allowed_ports)
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.settimeout(2)
+def _local_address():
+    """A non-loopback IPv4 address of this host, or None."""
+    candidates = []
     try:
-        probe.connect(("127.0.0.1", port))
-    except PermissionError:
-        return
+        candidates.append(socket.gethostbyname(socket.gethostname()))
     except OSError:
-        raise SandboxNotEnforced(
-            "outbound TCP is not restricted: this kernel's Landlock has no network "
-            "rules (needs ABI 4, Linux 6.7 or newer). Upgrade the host kernel, or pass "
-            "allowUnrestrictedNetwork=True to let the agent connect anywhere."
-        )
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            udp.connect(_UNROUTABLE)
+            candidates.append(udp.getsockname()[0])
+    except OSError:
+        pass
+    return next((a for a in candidates if a and not a.startswith("127.") and a != "0.0.0.0"), None)
+
+
+def _listen(address, port=0):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind((address, port))
+    listener.listen(1)
+    return listener
+
+
+@dataclass
+class NetworkProbes:
+    """Prepared before the policy is applied.
+
+    * `other_port`: a listener on loopback, on a port outside the policy.
+      After applying, connecting to it must fail.
+    * `same_port`: this host's non-loopback address with a port the policy
+      allows, and nothing listening there. This is what an attacker's server
+      on port 8080 looks like to Landlock, which only checks ports. Without
+      the per-user firewall the kernel answers with a reset
+      (ECONNREFUSED); with it the connection is refused as prohibited
+      (EHOSTUNREACH) before it leaves the host.
+    """
+
+    other_port: socket.socket
+    same_port: tuple
+
+    @classmethod
+    def open(cls, allowed_ports):
+        address = _local_address() or _UNROUTABLE[0]
+        return cls(other_port=_listen("127.0.0.1"), same_port=(address, min(allowed_ports)))
+
+    def close(self):
+        self.other_port.close()
+
+
+_PROHIBITED = {errno.EHOSTUNREACH, errno.EACCES, errno.EPERM, errno.ENETUNREACH}
+
+
+def _connect_error(address, timeout=3):
+    """None if the connection succeeded, else the errno (ETIMEDOUT on timeout)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.settimeout(timeout)
+    try:
+        probe.connect(address)
+        return None
+    except socket.timeout:
+        return errno.ETIMEDOUT
+    except OSError as exc:
+        return exc.errno
     finally:
         probe.close()
-    raise SandboxNotEnforced(f"a TCP connection to port {port} was allowed")
+
+
+def verify_network_enforced(probes):
+    """Raise SandboxNotEnforced unless the agent can reach nothing but the
+    allowed loopback ports."""
+    try:
+        loopback = probes.other_port.getsockname()
+        if _connect_error(loopback) is None:
+            raise SandboxNotEnforced(f"a loopback port outside the policy ({loopback[1]}) is reachable")
+        outcome = _connect_error(probes.same_port)
+        if outcome not in _PROHIBITED:
+            seen = "connected" if outcome is None else errno.errorcode.get(outcome, str(outcome))
+            raise SandboxNotEnforced(
+                f"{probes.same_port[0]}:{probes.same_port[1]} (an allowed port on a non-loopback "
+                f"address) was not refused by the firewall ({seen}). The per-user firewall "
+                "(profile/firewall.py, needs CAP_NET_ADMIN) is not in place; pass "
+                "allowUnrestrictedNetwork=True to run without it.")
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            try:
+                udp.sendto(b"probe", _UNROUTABLE)
+            except OSError:
+                pass
+            else:
+                raise SandboxNotEnforced("UDP to non-loopback addresses is not refused: the per-user "
+                                         "firewall is not in place")
+    finally:
+        probes.close()
 
 
 def _config_ports(key):
@@ -264,10 +338,12 @@ def apply_security_policy(path):
     ro = policy._resolve_paths(policy._read_only, logging=False)
     rw = policy._resolve_paths(policy._read_write, logging=False)
     probe = choose_probe(ro, rw)
+    network_probes = (NetworkProbes.open(policy.loopback_ports)
+                      if policy.connect_ports is not None else None)
     policy.apply()
     verify_enforced(probe)
-    if policy.connect_ports is not None:
-        verify_network_enforced(policy.connect_ports)
+    if network_probes is not None:
+        verify_network_enforced(network_probes)
     _applied_paths[_policy_key(path)] = policy.resolved_paths
     network = ("unrestricted" if policy.connect_ports is None
                else f"TCP connect only to ports {policy.connect_ports}")
@@ -349,6 +425,12 @@ class FileSystemPolicy:
         # None: no network rules. A list: the only TCP ports that may be
         # connected to; binding is denied.
         self.connect_ports = None
+        self._loopback_ports = []
+
+    @property
+    def loopback_ports(self):
+        """Ports the policy itself lists: reachable on loopback only."""
+        return list(self._loopback_ports)
 
     def add_connect_ports(self, ports):
         if self.connect_ports is not None:
@@ -444,8 +526,10 @@ class FileSystemPolicy:
 
         net = policy.get('network_policy')
         self.connect_ports = None
+        self._loopback_ports = []
         if net is not None:
             self.connect_ports = sorted({int(p) for p in (net.get('connect_tcp') or [])})
+            self._loopback_ports = list(self.connect_ports)
 
     @staticmethod
     def _resolve_paths(paths: list[Path], logging: bool = True) -> list[Path]:
@@ -520,6 +604,11 @@ class FileSystemPolicy:
         strict = self._compatibility == LandLockCompatibility.HARD_REQUIREMENT
         ruleset = Landlock(strict=strict).allow_all_scope()
         if self.connect_ports is None:
+            ruleset.allow_all_network()
+        elif get_abi_version() < MINIMUM_NETWORK_ABI:
+            # No Landlock network rules on this kernel; the per-user
+            # firewall is the boundary (checked by verify_network_enforced).
+            logger.info("Landlock has no network rules on this kernel; relying on the firewall")
             ruleset.allow_all_network()
         elif self.connect_ports:
             ruleset.add_net_rule(*self.connect_ports, access=AccessNet.CONNECT_TCP)

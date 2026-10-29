@@ -109,6 +109,7 @@ RUN apt-get update \
       poppler-utils \
       util-linux \
       curl \
+      iptables \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /PeTTa

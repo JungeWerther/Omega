@@ -1,11 +1,15 @@
 """Allowlisting HTTPS egress proxy for the agent.
 
-The agent's Landlock policy only lets it open TCP connections to local
-ports: nginx (LLM providers), the gate (chat) and this proxy. Everything
-else it fetches (web search, git, curl) goes through here as an HTTP
-CONNECT tunnel, and the tunnel is opened only when
+The agent may only open TCP connections to local services (Landlock port
+rules plus the per-user firewall in profile/firewall.py): nginx (LLM
+providers), the gate (chat) and this proxy. Everything else it fetches (web
+search, git, curl) goes through here as an HTTP CONNECT tunnel, and the
+tunnel is opened only when
 
-* the host matches the allowlist (a domain or any of its subdomains),
+* the host is a valid DNS name (letters, digits, hyphens and dots; no NUL
+  or other control characters a resolver might truncate at),
+* the host is on the allowlist: `example.com` matches that host exactly,
+  `*.example.com` matches its subdomains,
 * the port is allowed (443 by default),
 * the host is a name, not an IP literal, and
 * every address it resolves to is public: loopback, private, link-local
@@ -22,6 +26,7 @@ import asyncio
 import ipaddress
 import logging
 import pathlib
+import re
 import socket
 import sys
 from dataclasses import dataclass
@@ -34,19 +39,29 @@ MAX_CONNECTIONS = 64
 CONNECT_TIMEOUT_SECONDS = 10
 IDLE_TIMEOUT_SECONDS = 300
 
-# Hosts the search skill needs (ddgs backends). Searching cannot exfiltrate
-# to an attacker: they cannot read a search engine's query log.
+# The exact hosts the search skill (ddgs) queries. Exact hosts, not parent
+# domains: google.com would include docs.google.com (public forms an agent
+# could post data to), and wikipedia.org accepts anonymous edits, so
+# neither is allowed by default. An attacker cannot read a search engine's
+# query log, so these hosts are not an exfiltration channel.
 DEFAULT_ALLOWLIST = (
     "duckduckgo.com",
-    "bing.com",
+    "html.duckduckgo.com",
+    "www.bing.com",
     "search.brave.com",
-    "google.com",
-    "mojeek.com",
-    "startpage.com",
+    "www.google.com",
+    "www.mojeek.com",
+    "www.startpage.com",
     "yandex.com",
     "search.yahoo.com",
-    "wikipedia.org",
+    "news.search.yahoo.com",
 )
+
+_HOSTNAME = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
+
+
+def valid_hostname(host):
+    return bool(_HOSTNAME.match(host))
 
 
 @dataclass(frozen=True)
@@ -64,13 +79,21 @@ class EgressPolicy:
         return cls(domains=frozenset(base | names(extra_domains)), ports=frozenset(port_set))
 
     def allows_name(self, host):
-        host = host.lower().rstrip(".")
-        if not host or _is_ip_literal(host):
+        host = host.lower()
+        if host.endswith("."):
+            host = host[:-1]
+        if not valid_hostname(host) or _is_ip_literal(host):
             return False
-        return any(host == domain or host.endswith("." + domain) for domain in self.domains)
+        return any(_matches(host, entry) for entry in self.domains)
 
     def allows(self, host, port):
         return port in self.ports and self.allows_name(host)
+
+
+def _matches(host, entry):
+    if entry.startswith("*."):
+        return host.endswith(entry[1:])
+    return host == entry
 
 
 def _is_ip_literal(host):
@@ -115,10 +138,12 @@ def parse_connect(head):
         method, target, _version = request_line.split(" ", 2)
     except (UnicodeDecodeError, ValueError) as exc:
         raise _Refused(400, "malformed request") from exc
+    if any(ord(char) < 0x21 or ord(char) == 0x7F for char in target):
+        raise _Refused(400, "control characters in CONNECT target")
     if method.upper() != "CONNECT":
         raise _Refused(405, "only CONNECT (https) is supported")
     host, sep, port = target.rpartition(":")
-    if not sep or not port.isdigit():
+    if not sep or not port.isdigit() or not 0 < int(port) < 65536:
         raise _Refused(400, "CONNECT target must be host:port")
     return host.strip("[]"), int(port)
 

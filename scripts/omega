@@ -661,7 +661,7 @@ help() {
     echo -e "\t-d <Docker image> set Docker image name (default omega:latest)"
     echo -e "\t-l <logging config> set Python logging config file"
     echo -e "\t--allow-unsandboxed run the agent even if its Landlock sandbox cannot be applied (unsafe)"
-    echo -e "\t--egress-allow <domains> let the agent reach these extra domains (and subdomains) over HTTPS, comma-separated"
+    echo -e "\t--egress-allow <hosts> let the agent reach these hosts over HTTPS, comma-separated (*.example.com for subdomains)"
     echo -e "\t--allow-unrestricted-network let the agent connect anywhere, e.g. on kernels older than Linux 6.7 (unsafe)"
     echo -e "\t--version, -v show the Omega version"
     echo -e "\t--help, -h show this help"
@@ -820,6 +820,11 @@ options() {
         esac
     done
 
+    # Validate before anything is stopped or migrated.
+    if [[ -n "${egress_extra_domains}" && ! "${egress_extra_domains}" =~ ^(\*\.)?[A-Za-z0-9.-]+(,(\*\.)?[A-Za-z0-9.-]+)*$ ]]; then
+        echo "--egress-allow takes comma-separated host names (example.com, or *.example.com for subdomains)" >&2
+        return 1
+    fi
     if [[ ! "${memory_transfer_volume_name}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
         echo "--memory-transfer-volume must be a Docker volume name, not a host path" >&2
         return 1
@@ -1197,6 +1202,7 @@ if sys.argv[1]:
             --name omega
             --security-opt no-new-privileges:true
             --pids-limit "${OMEGA_PIDS_LIMIT:-512}"
+            --cap-add NET_ADMIN
             --init
             --add-host=host.docker.internal:host-gateway
             --tmpfs /tmp:size=64m,mode=1777
@@ -1223,10 +1229,6 @@ if sys.argv[1]:
     )
 
     if [ -n "${egress_extra_domains}" ]; then
-        if [[ ! "${egress_extra_domains}" =~ ^[A-Za-z0-9.,-]+$ ]]; then
-            echo "--egress-allow takes comma-separated domain names" >&2
-            return 1
-        fi
         docker_cmd+=("egressExtraDomains=${egress_extra_domains}")
     fi
     if [ "${provider}" = "Test" ]; then

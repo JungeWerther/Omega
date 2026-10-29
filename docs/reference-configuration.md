@@ -71,7 +71,7 @@ Local model loading still happens before indexing and can delay cold startup.
 | `authStateDir` | `memory/.channel` | Directory holding the channel owner and group records. The Docker entrypoint sets it to `/var/lib/omega-gate`, which only the gate user can write. |
 | `securityPolicyPath` | `profile/policy-native.yaml` (the Docker launcher passes `profile/policy.yaml`) | Landlock filesystem policy for the agent. The native policy uses paths relative to the PeTTa checkout and includes the running Python environment. The agent exits (status 78) if the policy is missing, Landlock is unavailable or older than ABI 3 (Linux 6.2, needed to restrict truncation), or a self-test after applying it shows an access outside the policy still works, in-process or from a child process. |
 | `egressExtraDomains` / `egressAllowlist` | search engines | Domains the agent may reach over HTTPS through the egress proxy (launcher: `--egress-allow`). See [network egress](reference-network.md). |
-| `allowUnrestrictedNetwork` | `False` | Drop the agent's Landlock network rules (launcher: `--allow-unrestricted-network`), e.g. on kernels older than Linux 6.7. |
+| `allowUnrestrictedNetwork` | `False` | Skip the agent's per-user firewall and Landlock network rules (launcher: `--allow-unrestricted-network`), e.g. where the container cannot get `NET_ADMIN`. |
 | `allowUnsandboxed` | `False` | Set to `True` (launcher: `--allow-unsandboxed`) to keep running when the sandbox cannot be applied, for example on a host without Landlock. The agent can then read and write every file its user can. |
 | `allowUnauthenticated` | `False` | Without `OMEGA_AUTH_SECRET`, nobody can authenticate. Set to `True` to accept messages from anyone instead. |
 

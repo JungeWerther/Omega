@@ -151,7 +151,8 @@ run_egress() {
   local name omega_dir="${OMEGA_DIR}"
   for name in $(compgen -e); do
     case "${name}" in
-      LANG) ;;
+      # Non-secret proxy settings may come from OMEGA_* variables (src/config.py).
+      LANG|OMEGA_egressAllowlist|OMEGA_egressExtraDomains|OMEGA_egressAllowPorts) ;;
       *) unset "${name}" 2>/dev/null || true ;;
     esac
   done
@@ -180,6 +181,35 @@ if [ -z "${egress_ready:-}" ]; then
   exit 1
 fi
 
+# Optional knowledge-base import. A trusted one-time step run by the
+# entrypoint (it calls the embedding provider directly), so it runs before
+# the agent's firewall and proxy settings below apply to uid 65534.
+if [[ "${IMPORT_KB_ON_START}" == "1" ]]; then
+  su nobody -s /bin/sh -c "${OMEGA_DIR}/scripts/import_knowledge.sh"
+fi
+
+# --- Per-user firewall ---------------------------------------------------------
+# Landlock limits the agent's TCP connections to ports; these rules limit the
+# address: uid 65534 may reach 127.0.0.1 on the policy's ports only (plus
+# egressExtraPorts anywhere). All other traffic, UDP/DNS included, is
+# refused. Needs CAP_NET_ADMIN, which the launcher adds.
+agent_extra_ports=""
+allow_unrestricted_network=""
+for arg in "$@"; do
+  case "${arg}" in
+    egressExtraPorts=*) agent_extra_ports="${arg#*=}" ;;
+    allowUnrestrictedNetwork=True|allowUnrestrictedNetwork=true|allowUnrestrictedNetwork=1) allow_unrestricted_network=1 ;;
+  esac
+done
+if [ -n "${allow_unrestricted_network}" ]; then
+  echo "WARNING: allowUnrestrictedNetwork: no firewall for the agent" >&2
+elif ! python3 -I "${OMEGA_DIR}/profile/firewall.py" --policy "${OMEGA_DIR}/profile/policy.yaml" \
+       --uid 65534 --extra-ports "${agent_extra_ports}"; then
+  echo "Could not install the agent's firewall (the container needs --cap-add NET_ADMIN)." \
+       "Refusing to start; pass allowUnrestrictedNetwork=True to run without it." >&2
+  exit 1
+fi
+
 # Every HTTP client the agent uses (openai, requests, urllib, ddgs, git,
 # curl, pip) goes through the egress proxy, except the local services.
 EGRESS_PROXY_URL="http://127.0.0.1:${EGRESS_PORT}"
@@ -188,10 +218,6 @@ export http_proxy="${EGRESS_PROXY_URL}" https_proxy="${EGRESS_PROXY_URL}"
 export DDGS_PROXY="${EGRESS_PROXY_URL}"
 export NO_PROXY="127.0.0.1,localhost,::1" no_proxy="127.0.0.1,localhost,::1"
 
-# Optional knowledge-base import
-if [[ "${IMPORT_KB_ON_START}" == "1" ]]; then
-  su nobody -s /bin/sh -c "${OMEGA_DIR}/scripts/import_knowledge.sh"
-fi
 
 MEMORY_PORTABILITY_PYTHON='import os
 import sys
