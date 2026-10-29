@@ -11,10 +11,14 @@ without Landlock.
 import functools
 import os
 import enum
+import site
 import subprocess
+import sys
+import tempfile
 import yaml
 import json
-from py_landlock import Landlock, AccessFs
+from dataclasses import dataclass
+from py_landlock import Landlock, AccessFs, get_abi_version
 from pathlib import Path
 from glob import glob
 from src.logger import get_logger
@@ -72,56 +76,137 @@ def _policy_key(path) -> str:
     return str(path or "").strip().strip('"')
 
 
+# Landlock ABI 3 (Linux 6.2) is the first that can deny truncate(2); with an
+# older ABI files outside the policy could still be emptied, so the sandbox
+# would not be what the policy says.
+MINIMUM_LANDLOCK_ABI = 3
+
+# Places where a write probe directory may be created when the policy grants
+# read access everywhere (so no read probe exists).
+_WRITE_PROBE_PARENTS = ("/var/tmp", "/tmp", "/dev/shm")
+
+_DENIED = 13
+
+
+def _beneath(path: Path, granted: Path) -> bool:
+    return path == granted or granted in path.parents
+
+
 def _is_covered(path: Path, policy_paths) -> bool:
-    return any(path == granted or granted in path.parents or path in granted.parents
-               for granted in policy_paths)
+    return any(_beneath(path, granted) or path in granted.parents for granted in policy_paths)
 
 
-def canary_directory(policy_paths, root=Path("/")):
-    """A readable directory the policy does not grant, used to prove the
-    rules are enforced. Must be chosen before the policy is applied."""
-    granted = [Path(p) for p in policy_paths]
+@dataclass(frozen=True)
+class Probe:
+    """An access the policy must deny, chosen before the policy is applied.
+
+    `read` lists a directory; `write` creates a file in a directory. A probe
+    is valid only if the access worked before applying the policy, so a
+    later denial can only come from the new rules.
+    """
+
+    kind: str
+    path: Path
+
+    _CHILD = {
+        "read": "import os, sys\ntry:\n    os.listdir(sys.argv[1])\nexcept PermissionError:\n    sys.exit(13)\n",
+        "write": ("import os, sys\ntry:\n    open(os.path.join(sys.argv[1], 'child-probe'), 'x').close()\n"
+                  "except PermissionError:\n    sys.exit(13)\n"),
+    }
+
+    def attempt(self):
+        """True if denied in this process."""
+        try:
+            if self.kind == "read":
+                os.listdir(self.path)
+            else:
+                open(self.path / "probe", "x").close()
+        except PermissionError:
+            return True
+        return False
+
+    def attempt_in_child(self):
+        """True only if a child process ran and was denied (exit 13); any
+        other outcome, including a child that could not start, is not proof."""
+        child = subprocess.run([sys.executable, "-I", "-c", self._CHILD[self.kind], str(self.path)],
+                               capture_output=True, check=False)
+        return child.returncode == _DENIED
+
+
+def read_probe(granted_paths, root=Path("/")):
+    """A top-level directory outside every granted path that can be listed now."""
+    granted = [Path(p) for p in granted_paths]
     for candidate in sorted(root.iterdir()):
         try:
-            if (candidate.is_dir() and not candidate.is_symlink()
-                    and not _is_covered(candidate, granted)
-                    and os.access(candidate, os.R_OK | os.X_OK)):
-                return candidate
+            if not candidate.is_dir() or candidate.is_symlink() or _is_covered(candidate, granted):
+                continue
+            os.listdir(candidate)
         except OSError:
             continue
+        return Probe("read", candidate)
     return None
 
 
-def verify_enforced(canary):
-    """Raise SandboxNotEnforced unless listing `canary` is denied, both in
-    this process and in a child process (the path the shell skill uses)."""
-    if canary is None:
-        raise SandboxNotEnforced("no directory outside the policy to test enforcement with")
-    try:
-        os.listdir(canary)
-    except PermissionError:
-        pass
-    else:
-        raise SandboxNotEnforced(f"{canary} is still readable after applying the policy")
-    child = subprocess.run(["ls", str(canary)], capture_output=True, check=False)
-    if child.returncode == 0:
-        raise SandboxNotEnforced(f"a child process can still read {canary}")
+def write_probe(writable_paths, parents=_WRITE_PROBE_PARENTS):
+    """A fresh directory outside every writable path that can be written now."""
+    writable = [Path(p) for p in writable_paths]
+    for parent in map(Path, parents):
+        if not parent.is_dir() or any(_beneath(parent, granted) for granted in writable):
+            continue
+        try:
+            directory = Path(tempfile.mkdtemp(prefix=".omega-sandbox-probe-", dir=parent))
+        except OSError:
+            continue
+        return Probe("write", directory)
+    return None
+
+
+def choose_probe(read_only, read_write):
+    return read_probe(read_only + read_write) or write_probe(read_write)
+
+
+def canary_directory(policy_paths, root=Path("/")):
+    """Backwards-compatible helper: the read probe's directory, or None."""
+    probe = read_probe(policy_paths, root=root)
+    return probe.path if probe else None
+
+
+def verify_enforced(probe):
+    """Raise SandboxNotEnforced unless `probe` is denied both here and in a
+    child process (the path the shell skill uses)."""
+    if probe is None:
+        raise SandboxNotEnforced("no access outside the policy is available to test enforcement with")
+    if not probe.attempt():
+        raise SandboxNotEnforced(f"{probe.kind} access to {probe.path} still works after applying the policy")
+    if not probe.attempt_in_child():
+        raise SandboxNotEnforced(f"a child process was not shown to be denied {probe.kind} access to {probe.path}")
+
+
+def require_minimum_abi():
+    abi = get_abi_version()
+    if abi < MINIMUM_LANDLOCK_ABI:
+        raise SandboxNotEnforced(
+            f"Landlock ABI {abi} cannot restrict truncation; ABI {MINIMUM_LANDLOCK_ABI} "
+            "(Linux 6.2 or newer) is required for the policy to hold")
+    return abi
 
 
 @sandbox_required
 def apply_security_policy(path):
     if not _policy_key(path):
         raise SandboxNotEnforced("securityPolicyPath is not set")
+    abi = require_minimum_abi()
     policy = FileSystemPolicy()
     policy.load_file(_policy_key(path))
+    policy.prepare()
     policy.validate()
     ro = policy._resolve_paths(policy._read_only, logging=False)
     rw = policy._resolve_paths(policy._read_write, logging=False)
-    canary = canary_directory(ro + rw)
+    probe = choose_probe(ro, rw)
     policy.apply()
-    verify_enforced(canary)
+    verify_enforced(probe)
     _applied_paths[_policy_key(path)] = policy.resolved_paths
-    logger.info(f"Sandbox enforced (verified: {canary} is not readable)")
+    logger.info(f"Sandbox enforced (Landlock ABI {abi}; verified: {probe.kind} of {probe.path} is denied)")
 
 def get_allowed_policy_paths(path) -> str:
     """
@@ -192,7 +277,42 @@ class FileSystemPolicy:
         self._compatibility = LandLockCompatibility.BEST_EFFORT
         self._read_only = []
         self._read_write = []
+        self._optional = set()
+        self._create = set()
         self.resolved_paths = ([], [])
+
+    def _entries(self, items):
+        """Paths from policy entries. An entry is a path string or a mapping
+        {path, optional, create}. `~` and $VARIABLES are expanded; a path
+        whose variables are unset is skipped when optional."""
+        paths = []
+        for item in items or []:
+            spec = item if isinstance(item, dict) else {"path": item}
+            raw = os.path.expandvars(os.path.expanduser(str(spec["path"])))
+            if "$" in raw:
+                if spec.get("optional"):
+                    continue
+                raise ValueError(f"Policy path {spec['path']!r} uses an unset variable")
+            path = Path(raw)
+            if spec.get("optional"):
+                self._optional.add(path)
+            if spec.get("create"):
+                self._create.add(path)
+            paths.append(path)
+        return paths
+
+    @staticmethod
+    def _python_runtime_paths():
+        """Directories the running Python interpreter imports from."""
+        candidates = {sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix,
+                      *site.getsitepackages(), site.getusersitepackages()}
+        candidates.update(p for p in sys.path if p and os.path.isabs(p))
+        return sorted(Path(p) for p in candidates if os.path.isdir(p))
+
+    def prepare(self):
+        """Create the directories the policy marks with `create: true`."""
+        for path in self._create:
+            path.mkdir(parents=True, exist_ok=True)
 
     def load_file(self, path: str|Path):
         logger.info(f"Loading policy from file {path}")
@@ -218,19 +338,21 @@ class FileSystemPolicy:
 
         fs = policy.get('filesystem_policy')
 
+        self._optional = set()
+        self._create = set()
         ro = []
         rw = []
         if fs:
-            ro = fs.get('read_only', [])
-            if ro is None:
-                ro = []
-            rw = fs.get('read_write', [])
-            if rw is None:
-                rw = []
+            ro = self._entries(fs.get('read_only'))
+            rw = self._entries(fs.get('read_write'))
             if fs.get('include_workdir'):
-                rw.append(os.getcwd())
-        self._read_only = [Path(f'{p}') for p in ro]
-        self._read_write = [Path(f'{p}') for p in rw]
+                rw.append(Path(os.getcwd()))
+            if fs.get('include_python_runtime'):
+                runtime = self._python_runtime_paths()
+                self._optional.update(runtime)
+                ro.extend(runtime)
+        self._read_only = ro
+        self._read_write = rw
 
     @staticmethod
     def _resolve_paths(paths: list[Path], logging: bool = True) -> list[Path]:
@@ -271,6 +393,9 @@ class FileSystemPolicy:
         """
         return str(path).startswith(cls.OPTIONAL_PATH_PREFIXES)
 
+    def _may_be_missing(self, path: Path) -> bool:
+        return self._is_optional(path) or path in self._optional
+
     def validate(self):
         """Check that the policy lists no path missing on a host machine.
 
@@ -282,7 +407,7 @@ class FileSystemPolicy:
             ValueError: If a path which is not optional is missing.
         """
         missing = [str(p) for p in self._read_only + self._read_write
-                   if not self._is_optional(p) and not glob(str(p))]
+                   if not self._may_be_missing(p) and not glob(str(p))]
         if missing:
             raise ValueError(f"Policy paths missing on a host machine: {missing}")
 

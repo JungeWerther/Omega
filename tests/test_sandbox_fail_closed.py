@@ -6,12 +6,16 @@ cannot be lifted once applied.
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+
+pytest.importorskip("py_landlock")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "profile"))
@@ -147,7 +151,7 @@ def test_landlock_that_silently_does_nothing_is_caught(tmp_path):
 
     assert result.returncode == policy.SANDBOX_FAILURE_EXIT_CODE
     assert "STILL RUNNING" not in result.stdout
-    assert "still readable" in result.stderr
+    assert "still works after applying the policy" in result.stderr
 
 
 def test_unavailable_landlock_exits(tmp_path):
@@ -199,5 +203,143 @@ def test_real_policy_is_enforced_in_process_and_children(tmp_path):
     assert result.returncode == 0, result.stderr
     outcome = json.loads(result.stdout.strip().splitlines()[-1])
     assert outcome == {"read_outside": "denied", "write_inside": "allowed", "shell_write_outside": "denied"}
-    assert "Sandbox enforced (verified:" in result.stderr
+    assert "Sandbox enforced (Landlock ABI" in result.stderr
     assert not (tmp_path.parent / "escape.txt").exists()
+
+
+# -- probes ------------------------------------------------------------------
+
+def test_read_probe_skips_directories_that_are_already_unreadable(tmp_path, monkeypatch):
+    for name in ("a_inherited_denial", "b_free"):
+        (tmp_path / name).mkdir()
+    real_listdir = os.listdir
+
+    def listdir(path):
+        if Path(path).name == "a_inherited_denial":
+            raise PermissionError("denied by an outer sandbox")
+        return real_listdir(path)
+
+    monkeypatch.setattr(policy.os, "listdir", listdir)
+
+    assert policy.read_probe([], root=tmp_path) == policy.Probe("read", tmp_path / "b_free")
+
+
+def test_write_probe_is_created_outside_writable_paths(tmp_path):
+    allowed, other = tmp_path / "allowed", tmp_path / "other"
+    allowed.mkdir()
+    other.mkdir()
+
+    probe = policy.write_probe([allowed], parents=[str(allowed), str(other)])
+
+    assert probe.kind == "write"
+    assert probe.path.parent == other
+
+
+def test_child_that_cannot_run_is_not_proof(tmp_path, monkeypatch):
+    monkeypatch.setattr(policy.sys, "executable", "/bin/false")
+
+    assert policy.Probe("read", tmp_path).attempt_in_child() is False
+
+
+def test_old_landlock_abi_stops_the_agent(tmp_path):
+    path = _policy_file(tmp_path)
+    result = _run(tmp_path, f"""
+        policy.get_abi_version = lambda: 2
+        policy.apply_security_policy({str(path)!r})
+        print('STILL RUNNING')
+    """)
+
+    assert result.returncode == policy.SANDBOX_FAILURE_EXIT_CODE
+    assert "STILL RUNNING" not in result.stdout
+    assert "cannot restrict truncation" in result.stderr
+
+
+@needs_landlock
+def test_read_everything_policy_is_verified_with_a_write_probe(tmp_path):
+    path = _policy_file(tmp_path, read_only=["/"], read_write=[str(tmp_path), "/dev/null"])
+    result = _run(tmp_path, f"""
+        policy.apply_security_policy({str(path)!r})
+        print('RUNNING')
+    """)
+
+    assert result.returncode == 0, result.stderr
+    assert "verified: write of" in result.stderr
+
+
+# -- policy entries ----------------------------------------------------------
+
+def test_entries_expand_home_and_variables(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MODEL_CACHE", str(tmp_path / "models"))
+    monkeypatch.delenv("UNSET_CACHE", raising=False)
+    loaded = policy.FileSystemPolicy()
+    loaded.load_str(
+        "version: 1\nfilesystem_policy:\n"
+        "  read_only:\n  - ~/code\n  - $MODEL_CACHE\n  - {path: $UNSET_CACHE, optional: true}\n"
+        "  read_write:\n  - {path: ~/state, create: true}\n"
+    )
+
+    assert loaded._read_only == [tmp_path / "code", tmp_path / "models"]
+    assert loaded._read_write == [tmp_path / "state"]
+    loaded.prepare()
+    assert (tmp_path / "state").is_dir()
+
+
+def test_required_entry_with_unset_variable_is_an_error(monkeypatch):
+    monkeypatch.delenv("UNSET_CACHE", raising=False)
+    loaded = policy.FileSystemPolicy()
+
+    with pytest.raises(ValueError, match="unset variable"):
+        loaded.load_str("version: 1\nfilesystem_policy:\n  read_only:\n  - $UNSET_CACHE\n")
+
+
+def test_optional_entries_may_be_missing(tmp_path):
+    loaded = policy.FileSystemPolicy()
+    loaded.load_str("version: 1\nfilesystem_policy:\n  read_only:\n"
+                    f"  - {{path: {tmp_path / 'absent'}, optional: true}}\n")
+
+    loaded.validate()
+
+
+def test_python_runtime_paths_are_included_when_requested():
+    loaded = policy.FileSystemPolicy()
+    loaded.load_str("version: 1\nfilesystem_policy:\n  include_python_runtime: true\n")
+
+    assert Path(sys.prefix) in loaded._read_only
+
+
+# -- running without Docker --------------------------------------------------
+
+@needs_landlock
+def test_native_policy_works_from_a_petta_checkout():
+    # Outside /tmp, which the native policy makes writable.
+    tmp_path = Path(tempfile.mkdtemp(dir=Path.home()))
+    petta = tmp_path / "PeTTa"
+    (petta / "repos" / "Omega" / "src").mkdir(parents=True)
+    (petta / "repos" / "Omega" / "src" / "code.metta").write_text("(code)")
+    native = REPO_ROOT / "profile" / "policy-native.yaml"
+    result = _run(petta, f"""
+        import json, os
+        policy.apply_security_policy({str(native)!r})
+        def attempt(fn):
+            try:
+                fn(); return "allowed"
+            except PermissionError:
+                return "denied"
+        outcome = {{
+            "read code": attempt(lambda: open("repos/Omega/src/code.metta").read()),
+            "write memory": attempt(lambda: open("repos/Omega/memory/history.metta", "a").write("x")),
+            "write chroma": attempt(lambda: open("chroma_db/probe", "w").write("x")),
+            "write code": attempt(lambda: open("repos/Omega/src/code.metta", "a").write("x")),
+            "read outside": attempt(lambda: os.listdir({str(tmp_path)!r})),
+            "import": attempt(lambda: __import__("decimal")),
+        }}
+        print(json.dumps(outcome))
+    """)
+
+    shutil.rmtree(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {
+        "read code": "allowed", "write memory": "allowed", "write chroma": "allowed",
+        "write code": "denied", "read outside": "denied", "import": "allowed",
+    }

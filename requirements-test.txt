@@ -1,0 +1,5 @@
+# Dependencies the unit tests (tests/) import on a CI runner, pinned to the
+# versions in requirements.txt.
+py-landlock==0.1.1
+pyyaml==6.0.3
+websockets==16.0

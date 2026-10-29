@@ -69,8 +69,8 @@ Local model loading still happens before indexing and can delay cold startup.
 | `WS_URL` | *(empty — set at runtime)* | WebSocket endpoint URL (`ws://` or `wss://`). Required when `commchannel=websocket`. |
 | `WS_TOKEN` | *(empty — optional)* | Bearer token sent as `Authorization: Bearer <token>`. Leave empty for an unauthenticated endpoint. In Docker pass it as the `OMEGA_WS_TOKEN` environment variable, not as an argument, so it stays out of the process list. |
 | `authStateDir` | `memory/.channel` | Directory holding the channel owner and group records. The Docker entrypoint sets it to `/var/lib/omega-gate`, which only the gate user can write. |
-| `securityPolicyPath` | `profile/policy.yaml` | Landlock filesystem policy for the agent. The agent exits (status 78) if the policy is missing, Landlock is unavailable, or a self-test after applying it shows that a directory outside the policy is still readable. |
-| `allowUnsandboxed` | `False` | Set to `True` to keep running when the sandbox cannot be applied, for example on a host without Landlock. The agent can then read and write every file its user can. |
+| `securityPolicyPath` | `profile/policy-native.yaml` (the Docker launcher passes `profile/policy.yaml`) | Landlock filesystem policy for the agent. The native policy uses paths relative to the PeTTa checkout and includes the running Python environment. The agent exits (status 78) if the policy is missing, Landlock is unavailable or older than ABI 3 (Linux 6.2, needed to restrict truncation), or a self-test after applying it shows an access outside the policy still works, in-process or from a child process. |
+| `allowUnsandboxed` | `False` | Set to `True` (launcher: `--allow-unsandboxed`) to keep running when the sandbox cannot be applied, for example on a host without Landlock. The agent can then read and write every file its user can. |
 | `allowUnauthenticated` | `False` | Without `OMEGA_AUTH_SECRET`, nobody can authenticate. Set to `True` to accept messages from anyone instead. |
 
 | Environment variable | Meaning |
