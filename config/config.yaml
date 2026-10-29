@@ -1,5 +1,10 @@
 # General
 
+# Expose the `metta` skill, which evaluates arbitrary MeTTa (and through it
+# Python). Off by default: a prompt-injected agent could use it to rewrite
+# its own skills and prompt.
+enableMettaSkill: false
+
 # Turns the agent keeps running after a new human message before idling (seconds) 
 maxNewInputLoops: 50
 # Extra turns granted on each scheduled wake-up

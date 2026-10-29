@@ -179,13 +179,35 @@ def commChannelReceiveRaw():
     return _commchannel.receive()
 
 
+def _command_text(message: str) -> str:
+    _, separator, command = message.rpartition(": ")
+    return command if separator else message
+
+
 def commChannelReceive():
-    """Receive message from selected communication channel"""
-    global _commchannel
-    messages = _commchannel.receive().split(" | ")
-    return " | ".join(
-        message for message in messages if not handle_control_message(message)
-    )
+    """Receive the owner's messages for the agent.
+
+    /memory-export is answered here and dropped. /approve and /deny are
+    answered by the injection guard and replaced by a note for the agent.
+    Any other message is a genuine new turn from the owner, which ends the
+    taint left by untrusted tool output.
+    """
+    import guard
+
+    raw = _commchannel.receive()
+    forwarded, genuine = [], False
+    for message in raw.split(" | ") if raw else []:
+        if handle_control_message(message):
+            continue
+        note = guard.handle_owner_command(_command_text(message))
+        if note is not None:
+            forwarded.append(note)
+            continue
+        forwarded.append(message)
+        genuine = genuine or bool(message.strip())
+    if genuine:
+        guard.guard().human_turn()
+    return " | ".join(forwarded)
 
 def commChannelSend(message):
     """Send message via selected communication channel"""

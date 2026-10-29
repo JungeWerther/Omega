@@ -6,6 +6,10 @@ Defined in `src/skills.metta`. Backed by two reasoning engines in `lib_nal.metta
 
 ## `metta`
 
+> Off by default. Set `enableMettaSkill=True` to register it. It can run
+> arbitrary code through `py-call`; see
+> [prompt-injection containment](reference-injection.md).
+
 ### Signature
 ```metta
 (metta sexpression)

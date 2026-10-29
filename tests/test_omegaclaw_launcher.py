@@ -747,3 +747,14 @@ def test_test_provider_opens_the_mock_llm_port(tmp_path, monkeypatch):
     result = _run_launcher(tmp_path, "-p", "Test", "-t", "test", memory_import=False)
 
     assert "<egressExtraPorts=9765>" in _agent_run(result)
+
+
+def test_metta_skill_is_opt_in(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    default = _agent_run(_run_launcher(tmp_path / "a", memory_import=False))
+    enabled = _run_launcher(tmp_path / "b", "--enable-metta-skill", memory_import=False)
+
+    assert "enableMettaSkill" not in default
+    assert "<enableMettaSkill=True>" in _agent_run(enabled)
+    assert "arbitrary MeTTa" in enabled.stderr
