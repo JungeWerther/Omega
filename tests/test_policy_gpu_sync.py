@@ -42,6 +42,7 @@ def test_gpu_policy_matches_default_policy_plus_gpu_paths():
 
     assert gpu["version"] == default["version"]
     assert gpu["landlock"] == default["landlock"]
+    assert gpu["network_policy"] == default["network_policy"]
 
     default_fs = default["filesystem_policy"]
     gpu_fs = gpu["filesystem_policy"]

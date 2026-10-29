@@ -56,6 +56,7 @@ User-facing MeTTa skills the agent invokes. Each page follows the template **Sig
 
 - [reference-configuration.md](./reference-configuration.md) — `configure` form and all runtime parameters
 - [reference-channels.md](./reference-channels.md) — IRC, Telegram, Slack, Mattermost, WebSocket, and websearch adapters plus the channel contract
+- [reference-network.md](./reference-network.md) — egress allowlist proxy and Landlock network rules
 - [reference-channel-auth.md](./reference-channel-auth.md) — gate process, owner secret, fail-closed channel authentication
 - [reference-python-bridges.md](./reference-python-bridges.md) — `lib_llm_ext.py`, `src/helper.py`, `src/skills.pl`
 - [reference-memory-portability.md](./reference-memory-portability.md) — Operator backup, restore, and archive-transfer workflow

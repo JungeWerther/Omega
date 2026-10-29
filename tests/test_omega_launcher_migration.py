@@ -71,7 +71,7 @@ if args[:1] == ["run"]:
             mounts[mount["target"]] = mount["source"]
             index += 2
         elif option in (
-            "--entrypoint", "--user", "--group-add", "--network", "-e", "--name", "--security-opt", "--tmpfs", "--pids-limit"
+            "--entrypoint", "--user", "--group-add", "--network", "-e", "--name", "--security-opt", "--tmpfs", "--pids-limit", "--cap-add"
         ):
             if option == "--entrypoint":
                 entrypoint = args[index + 1]

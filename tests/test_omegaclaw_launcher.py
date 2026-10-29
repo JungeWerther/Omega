@@ -703,3 +703,47 @@ def test_container_has_a_process_limit(tmp_path):
     result = _run_launcher(tmp_path, memory_import=False)
 
     assert "<--pids-limit> <512>" in _agent_run(result)
+
+
+
+def test_egress_allow_extends_the_allowlist(tmp_path):
+    result = _run_launcher(tmp_path, "--egress-allow", "github.com", "--egress-allow", "pypi.org",
+                           memory_import=False)
+
+    assert "<egressExtraDomains=github.com,pypi.org>" in _agent_run(result)
+
+
+def test_egress_allow_rejects_non_hosts_before_touching_the_running_agent(tmp_path):
+    result = _run_launcher(tmp_path, "--egress-allow", "github.com /etc", memory_import=False)
+
+    assert result.returncode != 0
+    assert "comma-separated host names" in result.stderr
+    assert "<rm>" not in result.stdout and "<run>" not in result.stdout
+
+
+def test_egress_allow_accepts_subdomain_wildcards(tmp_path):
+    result = _run_launcher(tmp_path, "--egress-allow", "*.githubusercontent.com", memory_import=False)
+
+    assert "<egressExtraDomains=*.githubusercontent.com>" in _agent_run(result)
+
+
+def test_container_can_install_the_agent_firewall(tmp_path):
+    assert "<--cap-add> <NET_ADMIN>" in _agent_run(_run_launcher(tmp_path, memory_import=False))
+
+
+def test_unrestricted_network_is_an_explicit_flag(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    default = _agent_run(_run_launcher(tmp_path / "a", memory_import=False))
+    opted = _run_launcher(tmp_path / "b", "--allow-unrestricted-network", memory_import=False)
+
+    assert "allowUnrestrictedNetwork" not in default
+    assert "<allowUnrestrictedNetwork=True>" in _agent_run(opted)
+    assert "connections to any host" in opted.stderr
+
+
+def test_test_provider_opens_the_mock_llm_port(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_SERVER_IP", "host.docker.internal")
+    result = _run_launcher(tmp_path, "-p", "Test", "-t", "test", memory_import=False)
+
+    assert "<egressExtraPorts=9765>" in _agent_run(result)

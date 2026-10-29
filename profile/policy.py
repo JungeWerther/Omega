@@ -8,8 +8,10 @@ the process exits (status 78, EX_CONFIG) instead of running unsandboxed.
 without Landlock.
 """
 
+import errno
 import functools
 import os
+import socket
 import enum
 import shutil
 import site
@@ -19,7 +21,7 @@ import tempfile
 import yaml
 import json
 from dataclasses import dataclass
-from py_landlock import Landlock, AccessFs, get_abi_version
+from py_landlock import Landlock, AccessFs, AccessNet, get_abi_version
 from pathlib import Path
 from glob import glob
 from src.logger import get_logger
@@ -200,6 +202,123 @@ def require_minimum_abi():
     return abi
 
 
+# A TEST-NET-1 address: never a real host, used to check that UDP is refused.
+_UNROUTABLE = ("192.0.2.1", 9)
+MINIMUM_NETWORK_ABI = 4
+
+
+def _local_address():
+    """A non-loopback IPv4 address of this host, or None."""
+    candidates = []
+    try:
+        candidates.append(socket.gethostbyname(socket.gethostname()))
+    except OSError:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            udp.connect(_UNROUTABLE)
+            candidates.append(udp.getsockname()[0])
+    except OSError:
+        pass
+    return next((a for a in candidates if a and not a.startswith("127.") and a != "0.0.0.0"), None)
+
+
+def _listen(address, port=0):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind((address, port))
+    listener.listen(1)
+    return listener
+
+
+@dataclass
+class NetworkProbes:
+    """Prepared before the policy is applied.
+
+    * `other_port`: a listener on loopback, on a port outside the policy.
+      After applying, connecting to it must fail.
+    * `same_port`: this host's non-loopback address with a port the policy
+      allows, and nothing listening there. This is what an attacker's server
+      on port 8080 looks like to Landlock, which only checks ports. Without
+      the per-user firewall the kernel answers with a reset
+      (ECONNREFUSED); with it the connection is refused as prohibited
+      (EHOSTUNREACH) before it leaves the host.
+    """
+
+    other_port: socket.socket
+    same_port: tuple
+
+    @classmethod
+    def open(cls, allowed_ports):
+        address = _local_address() or _UNROUTABLE[0]
+        return cls(other_port=_listen("127.0.0.1"), same_port=(address, min(allowed_ports)))
+
+    def close(self):
+        self.other_port.close()
+
+
+_PROHIBITED = {errno.EHOSTUNREACH, errno.EACCES, errno.EPERM, errno.ENETUNREACH}
+
+
+def _connect_error(address, timeout=3):
+    """None if the connection succeeded, else the errno (ETIMEDOUT on timeout)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.settimeout(timeout)
+    try:
+        probe.connect(address)
+        return None
+    except socket.timeout:
+        return errno.ETIMEDOUT
+    except OSError as exc:
+        return exc.errno
+    finally:
+        probe.close()
+
+
+def verify_network_enforced(probes):
+    """Raise SandboxNotEnforced unless the agent can reach nothing but the
+    allowed loopback ports."""
+    try:
+        loopback = probes.other_port.getsockname()
+        if _connect_error(loopback) is None:
+            raise SandboxNotEnforced(f"a loopback port outside the policy ({loopback[1]}) is reachable")
+        outcome = _connect_error(probes.same_port)
+        if outcome not in _PROHIBITED:
+            seen = "connected" if outcome is None else errno.errorcode.get(outcome, str(outcome))
+            raise SandboxNotEnforced(
+                f"{probes.same_port[0]}:{probes.same_port[1]} (an allowed port on a non-loopback "
+                f"address) was not refused by the firewall ({seen}). The per-user firewall "
+                "(profile/firewall.py, needs CAP_NET_ADMIN) is not in place; pass "
+                "allowUnrestrictedNetwork=True to run without it.")
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            try:
+                udp.sendto(b"probe", _UNROUTABLE)
+            except OSError:
+                pass
+            else:
+                raise SandboxNotEnforced("UDP to non-loopback addresses is not refused: the per-user "
+                                         "firewall is not in place")
+    finally:
+        probes.close()
+
+
+def _config_ports(key):
+    try:
+        from config import config_get_by_key
+    except ImportError:
+        return []
+    value = config_get_by_key(key, "")
+    return [int(p) for p in str(value or "").split(",") if str(p).strip()]
+
+
+def _allow_unrestricted_network():
+    try:
+        from config import config_get_by_key
+    except ImportError:
+        return False
+    value = config_get_by_key("allowUnrestrictedNetwork", False)
+    return value is True or str(value).strip().lower() in _TRUTHY
+
+
 @sandbox_required
 def apply_security_policy(path):
     if not _policy_key(path):
@@ -209,13 +328,27 @@ def apply_security_policy(path):
     policy.load_file(_policy_key(path))
     policy.prepare()
     policy.validate()
+    if policy.connect_ports is not None:
+        if _allow_unrestricted_network():
+            logger.critical("Network NOT restricted (allowUnrestrictedNetwork=True): "
+                            "the agent can open TCP connections to any host.")
+            policy.connect_ports = None
+        else:
+            policy.add_connect_ports(_config_ports("egressExtraPorts"))
     ro = policy._resolve_paths(policy._read_only, logging=False)
     rw = policy._resolve_paths(policy._read_write, logging=False)
     probe = choose_probe(ro, rw)
+    network_probes = (NetworkProbes.open(policy.loopback_ports)
+                      if policy.connect_ports is not None else None)
     policy.apply()
     verify_enforced(probe)
+    if network_probes is not None:
+        verify_network_enforced(network_probes)
     _applied_paths[_policy_key(path)] = policy.resolved_paths
-    logger.info(f"Sandbox enforced (Landlock ABI {abi}; verified: {probe.kind} of {probe.path} is denied)")
+    network = ("unrestricted" if policy.connect_ports is None
+               else f"TCP connect only to ports {policy.connect_ports}")
+    logger.info(f"Sandbox enforced (Landlock ABI {abi}; verified: {probe.kind} of {probe.path} is denied; "
+                f"network: {network})")
 
 def get_allowed_policy_paths(path) -> str:
     """
@@ -289,6 +422,19 @@ class FileSystemPolicy:
         self._optional = set()
         self._create = set()
         self.resolved_paths = ([], [])
+        # None: no network rules. A list: the only TCP ports that may be
+        # connected to; binding is denied.
+        self.connect_ports = None
+        self._loopback_ports = []
+
+    @property
+    def loopback_ports(self):
+        """Ports the policy itself lists: reachable on loopback only."""
+        return list(self._loopback_ports)
+
+    def add_connect_ports(self, ports):
+        if self.connect_ports is not None:
+            self.connect_ports = sorted(set(self.connect_ports) | {int(p) for p in ports})
 
     def _entries(self, items):
         """Paths from policy entries. An entry is a path string or a mapping
@@ -378,6 +524,13 @@ class FileSystemPolicy:
         self._read_only = ro
         self._read_write = rw
 
+        net = policy.get('network_policy')
+        self.connect_ports = None
+        self._loopback_ports = []
+        if net is not None:
+            self.connect_ports = sorted({int(p) for p in (net.get('connect_tcp') or [])})
+            self._loopback_ports = list(self.connect_ports)
+
     @staticmethod
     def _resolve_paths(paths: list[Path], logging: bool = True) -> list[Path]:
         """Expand glob patterns and drop paths missing on a host machine.
@@ -449,9 +602,17 @@ class FileSystemPolicy:
         rwf = list(filter(lambda p: not p.is_dir(), rw))
 
         strict = self._compatibility == LandLockCompatibility.HARD_REQUIREMENT
-        Landlock(strict=strict) \
-            .allow_all_scope() \
-            .allow_all_network() \
+        ruleset = Landlock(strict=strict).allow_all_scope()
+        if self.connect_ports is None:
+            ruleset.allow_all_network()
+        elif get_abi_version() < MINIMUM_NETWORK_ABI:
+            # No Landlock network rules on this kernel; the per-user
+            # firewall is the boundary (checked by verify_network_enforced).
+            logger.info("Landlock has no network rules on this kernel; relying on the firewall")
+            ruleset.allow_all_network()
+        elif self.connect_ports:
+            ruleset.add_net_rule(*self.connect_ports, access=AccessNet.CONNECT_TCP)
+        ruleset \
             .add_path_rule('/', access=AccessFs.EXECUTE) \
             .add_path_rule(*rwd, access=FileSystemPolicy.READ_WRITE_DIR_ACCESS) \
             .add_path_rule(*rwf, access=FileSystemPolicy.READ_WRITE_FILE_ACCESS) \
